@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { join } from "node:path"
 import { app } from "electron"
 import { createOpencodeClient, type Config, type OpencodeClient } from "@opencode-ai/sdk/v2"
-import type { CopilotPromptInput, CopilotReply, CopilotStatus } from "../shared/types"
+import type { CopilotModelsResult, CopilotPromptInput, CopilotReply, CopilotStatus } from "../shared/types"
 import { MongoMcpServer } from "./mongo-mcp-server"
 
 const mongoReadTools = ["mongo_list_databases", "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_count"] as const
@@ -94,6 +94,46 @@ export class OpencodeService {
     return this.currentStatus
   }
 
+  async models(): Promise<CopilotModelsResult> {
+    if (!this.client) {
+      const status = await this.start()
+      if (status.state !== "ready") throw new Error(status.state === "error" ? status.message : "OpenCode is not ready.")
+    }
+    const [providersResult, configResult] = await Promise.all([
+      this.client!.config.providers(),
+      this.client!.config.get(),
+    ])
+    const providerData = providersResult.data
+    if (!providerData) throw new Error("OpenCode returned no model providers.")
+    const models = providerData.providers
+      .flatMap((provider) => Object.values(provider.models).map((model) => ({
+        providerID: provider.id,
+        modelID: model.id,
+        providerName: provider.name,
+        name: model.name,
+        family: model.family,
+        supportsTools: model.capabilities.toolcall,
+        contextLimit: model.limit.context,
+        status: model.status,
+      })))
+      .filter((model) => model.status !== "deprecated")
+      .sort((left, right) => left.providerName.localeCompare(right.providerName) || left.name.localeCompare(right.name))
+
+    const configuredModel = configResult.data?.model
+    const separator = configuredModel?.indexOf("/") ?? -1
+    const configuredDefault = separator > 0
+      ? { providerID: configuredModel!.slice(0, separator), modelID: configuredModel!.slice(separator + 1) }
+      : undefined
+    const fallbackProvider = providerData.providers.find((provider) => {
+      const modelID = providerData.default[provider.id]
+      return Boolean(modelID && provider.models[modelID])
+    })
+    const defaultModel = configuredDefault ?? (fallbackProvider
+      ? { providerID: fallbackProvider.id, modelID: providerData.default[fallbackProvider.id] }
+      : undefined)
+    return { models, defaultModel }
+  }
+
   async prompt(input: CopilotPromptInput): Promise<CopilotReply> {
     if (this.promptInFlight) throw new Error("Wait for the current Pilot request to finish.")
     if (!this.client) {
@@ -136,6 +176,7 @@ export class OpencodeService {
         sessionID: this.sessionId,
         system,
         tools,
+        model: input.model,
         parts: [{ type: "text", text: input.text }],
       })
       const text = (result.data?.parts ?? [])

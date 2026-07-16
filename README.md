@@ -41,6 +41,7 @@ npm run build
 ## Security Boundaries
 
 - The renderer has no Node.js integration and receives only explicit IPC methods.
+- MongoDB parsing, sorting, counting, pagination, cursor execution, and serialization run in Electron's main process; the renderer receives only one bounded result page.
 - Connection URIs are never returned to the renderer after saving.
 - Access modes are application safeguards, not replacements for MongoDB roles.
 - OpenCode tools default to denied; web access requires approval.

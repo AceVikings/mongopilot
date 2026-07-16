@@ -9,6 +9,7 @@
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:bson": "tsx scripts/bson-format-smoke.ts",
     "test:mcp": "tsx scripts/mcp-smoke.ts",
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder"
@@ -24,6 +25,8 @@
     "opencode-ai": "1.18.2",
     "react": "19.2.7",
     "react-dom": "19.2.7",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {

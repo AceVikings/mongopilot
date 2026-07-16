@@ -9,6 +9,7 @@ import {
   Check,
   CirclesThreePlus,
   Code,
+  Copy,
   Database,
   DotsThree,
   FolderSimple,
@@ -17,6 +18,7 @@ import {
   Lightning,
   MagnifyingGlass,
   PaperPlaneTilt,
+  PencilSimple,
   Plus,
   Robot,
   ShieldCheck,
@@ -24,22 +26,43 @@ import {
   Sparkle,
   Star,
   Table,
+  Trash,
   X,
 } from "@phosphor-icons/react"
-import { FormEvent, useEffect, useState } from "react"
+import { FormEvent, useDeferredValue, useEffect, useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import type {
   AccessMode,
   CollectionInfo,
+  CopilotModel,
   CopilotStatus,
   DatabaseInfo,
+  FindResult,
   SavedConnection,
   SaveConnectionInput,
 } from "../../shared/types"
+import { getBsonDisplay, type BsonDisplayKind } from "./bson-format"
 
 type Message = { role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
 
 const pageSizes = [10, 20, 50, 100] as const
+
+function MarkdownMessage({ text }: { text: string }) {
+  return (
+    <div className="markdown-message">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  )
+}
 
 function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) {
   return (
@@ -60,6 +83,79 @@ function AccessBadge({ mode }: { mode: AccessMode }) {
     <span className="rounded-sm border border-line bg-canvas px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-muted">
       {label}
     </span>
+  )
+}
+
+function JsonPrimitive({ value }: { value: unknown }) {
+  if (value === null) return <span className="text-faint">null</span>
+  if (typeof value === "string") return <span className="break-all text-muted">{JSON.stringify(value)}</span>
+  if (typeof value === "boolean") return <span className="text-warning">{String(value)}</span>
+  return <span className="text-ink">{String(value)}</span>
+}
+
+const bsonTextColor: Record<BsonDisplayKind, string> = {
+  id: "text-danger",
+  date: "text-accent-strong",
+  number: "text-warning",
+  binary: "text-muted",
+  regex: "text-accent",
+  special: "text-muted",
+}
+
+function JsonValue({ value, path }: { value: unknown; path: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const bson = getBsonDisplay(value)
+  if (bson) return <span className={`break-all ${bsonTextColor[bson.kind]}`}>{bson.text}</span>
+  const isArray = Array.isArray(value)
+  const isObject = value !== null && typeof value === "object" && !isArray
+  if (!isArray && !isObject) return <JsonPrimitive value={value} />
+
+  const entries = isArray
+    ? value.map((item, index) => [String(index), item] as const)
+    : Object.entries(value as Record<string, unknown>)
+  const summary = isArray
+    ? `[${entries.length} item${entries.length === 1 ? "" : "s"}]`
+    : `{${entries.length} key${entries.length === 1 ? "" : "s"}}`
+
+  return (
+    <span className="inline-block min-w-0 align-top">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${path}`}
+        onClick={() => setExpanded((open) => !open)}
+        className="inline-flex min-h-6 items-center gap-1 rounded px-1 text-left text-faint hover:bg-raised hover:text-muted focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+      >
+        {expanded ? <CaretDown size={11} aria-hidden="true" /> : <CaretRight size={11} aria-hidden="true" />}
+        <span>{summary}</span>
+      </button>
+      {expanded && (
+        <span className="mt-1 block border-l border-line pl-4">
+          {entries.map(([key, child]) => (
+            <span key={`${path}.${key}`} className="block min-h-6 leading-6">
+              <span className="text-faint">{isArray ? key : JSON.stringify(key)}: </span>
+              <JsonValue value={child} path={`${path}.${key}`} />
+            </span>
+          ))}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function JsonDocument({ document }: { document: unknown }) {
+  if (document === null || typeof document !== "object" || Array.isArray(document)) {
+    return <JsonValue value={document} path="document" />
+  }
+  return (
+    <div className="min-w-0 font-mono text-xs leading-6">
+      {Object.entries(document as Record<string, unknown>).map(([key, value]) => (
+        <div key={key} className="min-h-6">
+          <span className="text-faint">{JSON.stringify(key)}: </span>
+          <JsonValue value={value} path={key} />
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -199,8 +295,46 @@ function CopilotPanel({
   const [sending, setSending] = useState(false)
   const [localStatus, setLocalStatus] = useState(status)
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [modelQuery, setModelQuery] = useState("")
+  const [models, setModels] = useState<CopilotModel[]>([])
+  const [selectedModel, setSelectedModel] = useState<CopilotModel | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const deferredModelQuery = useDeferredValue(modelQuery)
+  const normalizedModelQuery = deferredModelQuery.trim().toLocaleLowerCase()
+  const filteredModels = normalizedModelQuery
+    ? models.filter((model) => [model.name, model.providerName, model.providerID, model.modelID, model.family]
+      .some((value) => value?.toLocaleLowerCase().includes(normalizedModelQuery)))
+    : models
 
   useEffect(() => setLocalStatus(status), [status])
+  useEffect(() => {
+    if (status.state !== "ready" || !window.mongoPilot || typeof window.mongoPilot.copilot.models !== "function") return
+    let cancelled = false
+    setModelsLoading(true)
+    void window.mongoPilot.copilot.models()
+      .then((result) => {
+        if (cancelled) return
+        setModels(result.models)
+        const stored = localStorage.getItem("mongo-pilot:copilot-model")
+        const preferred = stored
+          ? result.models.find((model) => `${model.providerID}/${model.modelID}` === stored)
+          : undefined
+        const defaultModel = result.defaultModel
+          ? result.models.find((model) => model.providerID === result.defaultModel!.providerID && model.modelID === result.defaultModel!.modelID)
+          : undefined
+        setSelectedModel(preferred ?? defaultModel ?? result.models.find((model) => model.supportsTools) ?? result.models[0] ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setModels([])
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [status.state])
 
   async function send(event: FormEvent) {
     event.preventDefault()
@@ -212,11 +346,15 @@ function CopilotPanel({
     try {
       if (!window.mongoPilot) throw new Error("OpenCode is available in the Electron app.")
       if (localStatus.state !== "ready") setLocalStatus(await window.mongoPilot.copilot.start())
-      const reply = await window.mongoPilot.copilot.prompt({ text, context })
+      const reply = await window.mongoPilot.copilot.prompt({
+        text,
+        context,
+        model: selectedModel ? { providerID: selectedModel.providerID, modelID: selectedModel.modelID } : undefined,
+      })
       setMessages((current) => [...current, { role: "assistant", text: reply.text }])
       if (window.mongoPilot) setLocalStatus(await window.mongoPilot.copilot.status())
     } catch (reason) {
-      setMessages((current) => [...current, { role: "assistant", text: `OpenCode error: ${reason instanceof Error ? reason.message : "Request failed."}` }])
+      setMessages((current) => [...current, { role: "assistant", text: `Request failed: ${reason instanceof Error ? reason.message : "Unknown error."}` }])
       setLocalStatus(await window.mongoPilot.copilot.status())
     } finally {
       setSending(false)
@@ -239,15 +377,14 @@ function CopilotPanel({
       </div>
       <div className="scrollbar-thin flex-1 space-y-4 overflow-y-auto p-3" aria-live="polite">
         {messages.map((message, index) => (
-          <article key={`${message.role}-${index}`} className={message.role === "user" ? "ml-6 rounded-lg bg-raised p-3" : "pr-2"}>
-            <div className="mb-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-muted">
-              {message.role === "assistant" ? <Robot size={13} aria-hidden="true" /> : null}{message.role === "assistant" ? "Pilot" : "You"}
+          <article key={`${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start pl-1 pr-4"}`}>
+            <div className={message.role === "user" ? "max-w-[88%] rounded-lg bg-raised px-3 py-2.5" : "min-w-0 max-w-full"}>
+              <MarkdownMessage text={message.text} />
             </div>
-            <p className="whitespace-pre-wrap text-xs leading-5 text-ink">{message.text}</p>
           </article>
         ))}
         {sending && (
-          <div className="flex items-center gap-2 text-xs text-muted"><span className="size-1.5 rounded-full bg-accent" /><span>OpenCode is working<span className="cursor-blink">_</span></span></div>
+          <div className="flex items-center gap-2 pl-1 text-xs text-muted"><span className="size-1.5 rounded-full bg-accent" /><span>Working<span className="cursor-blink">_</span></span></div>
         )}
       </div>
       <form onSubmit={send} className="border-t border-line p-3">
@@ -276,6 +413,93 @@ function CopilotPanel({
             className="w-full resize-none bg-transparent px-3 pt-3 text-xs leading-5 placeholder:text-faint focus:outline-none"
           />
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
+            <div
+              className="relative min-w-0"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) {
+                  setModelMenuOpen(false)
+                  setModelQuery("")
+                }
+              }}
+            >
+              <button
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={modelMenuOpen}
+                onClick={() => {
+                  if (modelMenuOpen) setModelQuery("")
+                  setModelMenuOpen(!modelMenuOpen)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setModelMenuOpen(false)
+                    setModelQuery("")
+                  }
+                }}
+                className="flex h-7 max-w-36 items-center gap-1.5 rounded border border-line bg-canvas px-2 text-[10px] font-medium text-muted transition-[border-color,background-color,color] duration-150 ease-product hover:border-line-strong hover:text-ink focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/25 focus-visible:outline-none"
+              >
+                <Robot size={12} className="shrink-0 text-accent" aria-hidden="true" />
+                <span className="truncate">{modelsLoading ? "Loading models" : selectedModel?.name ?? "Choose model"}</span>
+                <CaretDown size={10} className="shrink-0" aria-hidden="true" />
+              </button>
+              {modelMenuOpen && (
+                <div className="absolute bottom-full left-0 z-10 mb-2 w-72 overflow-hidden rounded-md border border-line-strong bg-raised shadow-xl shadow-canvas/50">
+                  <div className="border-b border-line p-2">
+                    <label htmlFor="model-search" className="sr-only">Search models</label>
+                    <div className="flex h-9 items-center gap-2 rounded-md border border-line bg-canvas px-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+                      <MagnifyingGlass size={13} className="shrink-0 text-faint" aria-hidden="true" />
+                      <input
+                        id="model-search"
+                        type="search"
+                        autoFocus
+                        autoComplete="off"
+                        value={modelQuery}
+                        onChange={(event) => setModelQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.preventDefault()
+                          if (event.key === "Escape") {
+                            event.preventDefault()
+                            setModelMenuOpen(false)
+                            setModelQuery("")
+                          }
+                        }}
+                        placeholder="Search models..."
+                        className="min-w-0 flex-1 bg-transparent text-[11px] text-ink placeholder:text-faint focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div role="listbox" aria-label="OpenCode model" className="scrollbar-thin max-h-64 overflow-y-auto p-1">
+                    {filteredModels.map((model) => {
+                      const selected = selectedModel?.providerID === model.providerID && selectedModel.modelID === model.modelID
+                      return (
+                        <button
+                          key={`${model.providerID}/${model.modelID}`}
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          onClick={() => {
+                            setSelectedModel(model)
+                            localStorage.setItem("mongo-pilot:copilot-model", `${model.providerID}/${model.modelID}`)
+                            setModelMenuOpen(false)
+                            setModelQuery("")
+                          }}
+                          className="flex min-h-11 w-full items-center gap-2 rounded px-2 text-left hover:bg-panel focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+                        >
+                          <Check size={12} className={`shrink-0 ${selected ? "opacity-100" : "opacity-0"}`} aria-hidden="true" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[11px] font-medium text-ink">{model.name}</span>
+                            <span className="block truncate font-mono text-[9px] text-faint">{model.providerName} · {model.modelID}</span>
+                          </span>
+                          {!model.supportsTools && <span className="shrink-0 rounded border border-line px-1 font-mono text-[8px] text-faint">NO TOOLS</span>}
+                        </button>
+                      )
+                    })}
+                    {!modelsLoading && models.length === 0 && <p className="px-3 py-6 text-center text-[11px] text-faint">No models available</p>}
+                    {!modelsLoading && models.length > 0 && filteredModels.length === 0 && <p className="px-3 py-6 text-center text-[11px] text-faint">No models match "{deferredModelQuery.trim()}"</p>}
+                  </div>
+                </div>
+              )}
+            </div>
             <div
               className="relative"
               onBlur={(event) => {
@@ -307,7 +531,7 @@ function CopilotPanel({
                 </div>
               )}
             </div>
-            <button type="submit" disabled={!prompt.trim() || sending} aria-label="Send prompt" className="grid size-9 place-items-center rounded-md bg-accent text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:bg-line-strong disabled:text-muted">
+            <button type="submit" disabled={!prompt.trim() || sending} aria-label="Send prompt" className="ml-auto grid size-9 shrink-0 place-items-center rounded-md bg-accent text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:bg-line-strong disabled:text-muted">
               <PaperPlaneTilt size={16} weight="fill" aria-hidden="true" />
             </button>
           </div>
@@ -325,7 +549,7 @@ export default function App() {
   const [collections, setCollections] = useState<CollectionInfo[]>([])
   const [selectedDatabase, setSelectedDatabase] = useState("")
   const [selectedCollection, setSelectedCollection] = useState("")
-  const [documents, setDocuments] = useState<unknown[]>([])
+  const [documents, setDocuments] = useState<FindResult["documents"]>([])
   const [filter, setFilter] = useState("{}")
   const [sort, setSort] = useState("{}")
   const [pageSize, setPageSize] = useState(20)
@@ -336,6 +560,11 @@ export default function App() {
   const [error, setError] = useState("")
   const [duration, setDuration] = useState<number | null>(null)
   const [queryRan, setQueryRan] = useState(false)
+  const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null)
+  const [editDocumentText, setEditDocumentText] = useState("")
+  const [copiedDocumentId, setCopiedDocumentId] = useState<string | null>(null)
+  const [mutatingDocumentId, setMutatingDocumentId] = useState<string | null>(null)
+  const [pendingDeleteDocumentId, setPendingDeleteDocumentId] = useState<string | null>(null)
   const [copilotStatus, setCopilotStatus] = useState<CopilotStatus>({ state: "starting" })
   const [agentMode, setAgentMode] = useState<AccessMode>("read-only")
   const [activeTab, setActiveTab] = useState("Documents")
@@ -347,6 +576,15 @@ export default function App() {
       setCopilotStatus({ state: "error", message: reason instanceof Error ? reason.message : "OpenCode failed to start." })
     })
   }, [])
+
+  useEffect(() => {
+    if (!pendingDeleteDocumentId || mutatingDocumentId) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPendingDeleteDocumentId(null)
+    }
+    window.addEventListener("keydown", closeOnEscape)
+    return () => window.removeEventListener("keydown", closeOnEscape)
+  }, [pendingDeleteDocumentId, mutatingDocumentId])
 
   async function connect(connection: SavedConnection) {
     setError("")
@@ -401,6 +639,8 @@ export default function App() {
     setTotal(0)
     setDocuments([])
     setQueryRan(false)
+    setEditingDocumentId(null)
+    setPendingDeleteDocumentId(null)
     await runQuery({ connectionId, database, collection, filter: "{}", sort: preferences.sort, pageSize: preferences.pageSize, page: 1 })
   }
 
@@ -428,6 +668,7 @@ export default function App() {
         limit: nextPageSize,
       })
       setDocuments(result.documents)
+      setEditingDocumentId(null)
       setTotal(result.total)
       setDuration(result.durationMs)
       setQueryRan(true)
@@ -439,6 +680,77 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : "Query failed.")
     } finally {
       setQuerying(false)
+    }
+  }
+
+  async function copyDocument(id: string, document: unknown): Promise<void> {
+    await navigator.clipboard.writeText(JSON.stringify(document, null, 2))
+    setCopiedDocumentId(id)
+    window.setTimeout(() => setCopiedDocumentId((current) => current === id ? null : current), 1_500)
+  }
+
+  function editDocument(id: string, document: unknown): void {
+    if (activeConnection?.accessMode !== "read-write") {
+      setError("This connection is read-only. Reconnect with read/write access to edit documents.")
+      return
+    }
+    setError("")
+    setEditingDocumentId(id)
+    setEditDocumentText(JSON.stringify(document, null, 2))
+  }
+
+  async function saveDocument(id: string): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot) return
+    if (activeConnection.accessMode !== "read-write") {
+      setError("This connection is read-only. Reconnect with read/write access to save documents.")
+      return
+    }
+    setMutatingDocumentId(id)
+    setError("")
+    try {
+      await window.mongoPilot.database.replaceDocument({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+        id,
+        document: editDocumentText,
+      })
+      setEditingDocumentId(null)
+      await runQuery()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update this document.")
+    } finally {
+      setMutatingDocumentId(null)
+    }
+  }
+
+  function requestDeleteDocument(id: string): void {
+    if (activeConnection?.accessMode !== "read-write") {
+      setError("This connection is read-only. Reconnect with read/write access to delete documents.")
+      return
+    }
+    setError("")
+    setPendingDeleteDocumentId(id)
+  }
+
+  async function deleteDocument(id: string): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot) return
+    setMutatingDocumentId(id)
+    setError("")
+    try {
+      await window.mongoPilot.database.deleteDocument({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+        id,
+      })
+      setPendingDeleteDocumentId(null)
+      const nextPage = documents.length === 1 && page > 1 ? page - 1 : page
+      await runQuery({ page: nextPage })
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete this document.")
+    } finally {
+      setMutatingDocumentId(null)
     }
   }
 
@@ -474,11 +786,7 @@ export default function App() {
     <main className="grid h-[100dvh] min-h-[720px] min-w-[1100px] grid-rows-[40px_minmax(0,1fr)] overflow-hidden bg-canvas text-ink">
       <header className="title-drag grid grid-cols-[240px_minmax(0,1fr)_320px] items-center border-b border-line bg-shell max-lg:grid-cols-[240px_minmax(0,1fr)] max-md:grid-cols-[72px_minmax(0,1fr)]">
         <div className="truncate pl-20 text-xs font-semibold tracking-tight max-md:pl-3">Mongo Pilot <span className="ml-1 font-mono text-[9px] font-normal uppercase tracking-widest text-faint max-md:hidden">alpha</span></div>
-        <div className="flex h-full items-center border-x border-line px-3 max-lg:border-r-0">
-          <MagnifyingGlass size={14} className="text-faint" aria-hidden="true" />
-          <span className="ml-2 min-w-0 truncate text-xs text-faint">Search connections, databases, collections</span>
-          <kbd className="ml-auto rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint">⌘ K</kbd>
-        </div>
+        <div className="h-full border-x border-line max-lg:border-r-0" />
         <div className="flex items-center justify-between px-3 max-lg:hidden">
           <span className="flex items-center gap-2 text-xs font-semibold"><Sparkle size={14} weight="fill" className="text-accent" aria-hidden="true" /> Pilot</span>
           <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-muted"><span className={`size-1.5 rounded-full ${copilotStatus.state === "ready" ? "bg-accent" : "bg-line-strong"}`} />{copilotStatus.state}</span>
@@ -605,10 +913,41 @@ export default function App() {
                   <div className="space-y-2" aria-label="Loading documents">{[0, 1, 2, 3].map((item) => <div key={item} className="h-24 animate-pulse rounded-md border border-line bg-panel" />)}</div>
                 ) : documents.length ? (
                   <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-panel">
-                    {documents.map((document, index) => (
-                      <article key={index} className="grid grid-cols-[36px_minmax(0,1fr)] text-xs">
+                    {documents.map((row, index) => (
+                      <article key={row.id} className="group relative grid grid-cols-[36px_minmax(0,1fr)] text-xs">
                         <div className="border-r border-line bg-shell py-3 text-center font-mono text-faint">{String((page - 1) * pageSize + index + 1).padStart(2, "0")}</div>
-                        <pre className="scrollbar-thin overflow-x-auto whitespace-pre-wrap px-4 py-3 font-mono leading-5 text-muted">{JSON.stringify(document, null, 2)}</pre>
+                        {editingDocumentId === row.id ? (
+                          <div className="min-w-0 p-3">
+                            <label htmlFor={`document-editor-${index}`} className="sr-only">Edit document</label>
+                            <textarea
+                              id={`document-editor-${index}`}
+                              value={editDocumentText}
+                              onChange={(event) => setEditDocumentText(event.target.value)}
+                              spellCheck={false}
+                              rows={12}
+                              className="scrollbar-thin w-full resize-y rounded-md border border-line-strong bg-canvas p-3 font-mono text-xs leading-5 text-ink focus-visible:border-accent focus-visible:outline-none"
+                            />
+                            <div className="mt-2 flex justify-end gap-2">
+                              <button type="button" onClick={() => setEditingDocumentId(null)} className="inline-flex h-9 items-center gap-1.5 rounded px-3 text-xs font-medium text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"><X size={14} aria-hidden="true" />Cancel</button>
+                              <button type="button" disabled={mutatingDocumentId === row.id} onClick={() => void saveDocument(row.id)} className="inline-flex h-9 items-center gap-1.5 rounded bg-accent px-3 text-xs font-semibold text-canvas hover:bg-accent-strong focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><Check size={14} weight="bold" aria-hidden="true" />{mutatingDocumentId === row.id ? "Saving..." : "Save changes"}</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3 pr-28"><JsonDocument document={row.document} /></div>
+                        )}
+                        {editingDocumentId !== row.id && (
+                          <div className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-line bg-panel p-1 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                            <button type="button" aria-label="Copy document" title="Copy" onClick={() => void copyDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
+                              {copiedDocumentId === row.id ? <Check size={13} weight="bold" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+                            </button>
+                            <button type="button" aria-label="Edit document" title={activeConnection?.accessMode === "read-only" ? "Requires a read/write connection" : "Edit"} disabled={mutatingDocumentId === row.id} onClick={() => editDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
+                              <PencilSimple size={13} aria-hidden="true" />
+                            </button>
+                            <button type="button" aria-label="Delete document" title={activeConnection?.accessMode === "read-only" ? "Requires a read/write connection" : "Delete"} disabled={mutatingDocumentId === row.id} onClick={() => requestDeleteDocument(row.id)} className="grid size-7 place-items-center rounded text-muted hover:bg-danger/15 hover:text-danger focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
+                              <Trash size={13} aria-hidden="true" />
+                            </button>
+                          </div>
+                        )}
                       </article>
                     ))}
                   </div>
@@ -645,6 +984,23 @@ export default function App() {
           await connect(connection)
         }}
       />}
+      {pendingDeleteDocumentId && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && mutatingDocumentId === null) setPendingDeleteDocumentId(null)
+          }}
+        >
+          <section role="alertdialog" aria-modal="true" aria-labelledby="delete-document-title" aria-describedby="delete-document-description" className="w-full max-w-md rounded-lg border border-line-strong bg-panel p-5 shadow-2xl">
+            <h2 id="delete-document-title" className="text-base font-semibold">Delete document?</h2>
+            <p id="delete-document-description" className="mt-2 text-xs leading-5 text-muted">This permanently deletes the document from <span className="font-mono text-ink">{selectedDatabase}.{selectedCollection}</span>. This action cannot be undone.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" autoFocus disabled={mutatingDocumentId !== null} onClick={() => setPendingDeleteDocumentId(null)} className="h-10 rounded-md border border-line px-4 text-xs font-medium text-muted hover:border-line-strong hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={mutatingDocumentId !== null} onClick={() => void deleteDocument(pendingDeleteDocumentId)} className="inline-flex h-10 items-center gap-2 rounded-md bg-danger px-4 text-xs font-semibold text-canvas hover:brightness-110 focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-panel focus-visible:outline-none disabled:cursor-wait disabled:opacity-50"><Trash size={14} aria-hidden="true" />{mutatingDocumentId !== null ? "Deleting..." : "Delete document"}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   )
 }

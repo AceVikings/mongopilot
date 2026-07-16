@@ -1,7 +1,7 @@
 import { join } from "node:path"
 import { app, BrowserWindow, ipcMain, shell } from "electron"
 import icon from "../../resources/icon.png?asset"
-import type { FindInput, SaveConnectionInput } from "../shared/types"
+import type { DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
 import { MongoService } from "./mongo-service"
 import { MongoMcpServer } from "./mongo-mcp-server"
@@ -9,13 +9,17 @@ import { OpencodeService } from "./opencode-service"
 
 let mongo: MongoService
 let copilot: OpencodeService
+const minimumWindowSize = { width: 1100, height: 720 }
 
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 1100,
-    minHeight: 720,
+    minWidth: minimumWindowSize.width,
+    minHeight: minimumWindowSize.height,
+    resizable: true,
+    maximizable: true,
+    fullscreenable: true,
     show: false,
     titleBarStyle: "hiddenInset",
     backgroundColor: "#0a0d0a",
@@ -44,15 +48,22 @@ function registerIpc(store: ConnectionStore): void {
   ipcMain.handle("connections:disconnect", (_event, id: string) => mongo.disconnect(id))
   ipcMain.handle("database:listCollections", (_event, id: string, database: string) => mongo.listCollections(id, database))
   ipcMain.handle("database:find", (_event, input: FindInput) => mongo.find(input))
+  ipcMain.handle("database:replaceDocument", (_event, input: ReplaceDocumentInput) => mongo.replaceDocument(input))
+  ipcMain.handle("database:deleteDocument", (_event, input: DocumentTargetInput) => mongo.deleteDocument(input))
   ipcMain.handle("copilot:status", () => copilot.status())
   ipcMain.handle("copilot:start", () => copilot.start())
   ipcMain.handle("copilot:stop", () => copilot.stop())
+  ipcMain.handle("copilot:models", () => copilot.models())
   ipcMain.handle("copilot:prompt", (_event, input) => copilot.prompt(input))
 }
 
 void app.whenReady().then(() => {
   app.setAppUserModelId("com.mongopilot.desktop")
   if (process.platform === "darwin") app.dock?.setIcon(icon)
+  app.on("browser-window-created", (_event, window) => {
+    window.setMinimumSize(minimumWindowSize.width, minimumWindowSize.height)
+    window.setResizable(true)
+  })
   const store = new ConnectionStore(join(app.getPath("userData"), "connections.json"))
   mongo = new MongoService(store)
   copilot = new OpencodeService(new MongoMcpServer(mongo))

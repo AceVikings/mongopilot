@@ -1,6 +1,6 @@
 import { EJSON } from "bson"
 import { MongoClient, type Document, type Filter, type Sort, type UpdateFilter } from "mongodb"
-import type { AccessMode, CollectionInfo, DatabaseInfo, FindInput, FindResult, SavedConnection } from "../shared/types"
+import type { AccessMode, CollectionInfo, DatabaseInfo, DocumentTargetInput, FindInput, FindResult, ReplaceDocumentInput, SavedConnection } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
 
 interface ActiveConnection {
@@ -52,6 +52,8 @@ export class MongoService {
 
   async find(input: FindInput): Promise<FindResult> {
     const active = this.requireRead(input.connectionId)
+    if (!input.database.trim() || !input.collection.trim()) throw new Error("Database and collection are required.")
+    if (input.filter.length > 65_536 || input.sort.length > 65_536) throw new Error("Filter and sort input must be smaller than 64 KB.")
     const filter = input.filter.trim() ? EJSON.parse(input.filter) : {}
     if (!filter || Array.isArray(filter) || typeof filter !== "object") {
       throw new Error("Filter must be a JSON object.")
@@ -68,20 +70,43 @@ export class MongoService {
     const started = performance.now()
     const collection = active.client.db(input.database).collection(input.collection)
     const limit = Math.min(Math.max(input.limit, 1), 100)
+    const cursor = collection
+      .find(filter as Record<string, unknown>, { maxTimeMS: 30_000 })
+      .sort(sort as Sort)
+      .skip(Math.max(input.skip, 0))
+      .limit(limit)
+      .batchSize(limit)
+    if (Object.keys(sort).length > 0) cursor.allowDiskUse(true)
     const [documents, total] = await Promise.all([
-      collection
-        .find(filter as Record<string, unknown>)
-        .sort(sort as Sort)
-        .skip(Math.max(input.skip, 0))
-        .limit(limit)
-        .toArray(),
+      cursor.toArray(),
       collection.countDocuments(filter as Record<string, unknown>, { maxTimeMS: 30_000 }),
     ])
     return {
-      documents: EJSON.parse(EJSON.stringify(documents, { relaxed: true })) as unknown[],
+      documents: documents.map((document) => ({
+        id: EJSON.stringify(document._id, { relaxed: false }),
+        document: this.serialize(document),
+      })),
       total,
       durationMs: Math.round(performance.now() - started),
     }
+  }
+
+  async replaceDocument(input: ReplaceDocumentInput): Promise<void> {
+    const active = this.requireWrite(input.connectionId)
+    if (input.document.length > 10 * 1024 * 1024) throw new Error("Document must be smaller than 10 MB.")
+    const id = EJSON.parse(input.id)
+    const document = EJSON.parse(input.document)
+    if (!document || Array.isArray(document) || typeof document !== "object") throw new Error("Document must be a JSON object.")
+    const replacement = { ...(document as Document), _id: id }
+    const result = await active.client.db(input.database).collection(input.collection).replaceOne({ _id: id } as Filter<Document>, replacement)
+    if (result.matchedCount === 0) throw new Error("Document no longer exists.")
+  }
+
+  async deleteDocument(input: DocumentTargetInput): Promise<void> {
+    const active = this.requireWrite(input.connectionId)
+    const id = EJSON.parse(input.id)
+    const result = await active.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>)
+    if (result.deletedCount === 0) throw new Error("Document no longer exists.")
   }
 
   getAccessMode(connectionId: string): AccessMode {
@@ -162,6 +187,6 @@ export class MongoService {
   }
 
   private serialize(value: unknown): unknown {
-    return EJSON.parse(EJSON.stringify(value, { relaxed: true }))
+    return JSON.parse(EJSON.stringify(value, { relaxed: false })) as unknown
   }
 }

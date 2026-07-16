@@ -45,9 +45,23 @@ export interface FindInput {
 }
 
 export interface FindResult {
-  documents: unknown[]
+  documents: Array<{
+    id: string
+    document: unknown
+  }>
   total: number
   durationMs: number
+}
+
+export interface DocumentTargetInput {
+  connectionId: string
+  database: string
+  collection: string
+  id: string
+}
+
+export interface ReplaceDocumentInput extends DocumentTargetInput {
+  document: string
 }
 
 export type CopilotStatus =
@@ -58,6 +72,10 @@ export type CopilotStatus =
 
 export interface CopilotPromptInput {
   text: string
+  model?: {
+    providerID: string
+    modelID: string
+  }
   context?: {
     connectionId?: string
     connectionName?: string
@@ -79,6 +97,25 @@ export interface CopilotReply {
   sessionId: string
 }
 
+export interface CopilotModel {
+  providerID: string
+  modelID: string
+  providerName: string
+  name: string
+  family?: string
+  supportsTools: boolean
+  contextLimit: number
+  status: "alpha" | "beta" | "deprecated" | "active"
+}
+
+export interface CopilotModelsResult {
+  models: CopilotModel[]
+  defaultModel?: {
+    providerID: string
+    modelID: string
+  }
+}
+
 export interface MongoPilotApi {
   connections: {
     list(): Promise<SavedConnection[]>
@@ -90,11 +127,14 @@ export interface MongoPilotApi {
   database: {
     listCollections(connectionId: string, database: string): Promise<CollectionInfo[]>
     find(input: FindInput): Promise<FindResult>
+    replaceDocument(input: ReplaceDocumentInput): Promise<void>
+    deleteDocument(input: DocumentTargetInput): Promise<void>
   }
   copilot: {
     status(): Promise<CopilotStatus>
     start(): Promise<CopilotStatus>
     stop(): Promise<CopilotStatus>
+    models(): Promise<CopilotModelsResult>
     prompt(input: CopilotPromptInput): Promise<CopilotReply>
   }
 }
