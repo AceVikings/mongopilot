@@ -1,0 +1,162 @@
+import { randomBytes } from "node:crypto"
+import { delimiter, join } from "node:path"
+import { createOpencodeClient, createOpencodeServer, type OpencodeClient } from "@opencode-ai/sdk/v2"
+import type { CopilotPromptInput, CopilotReply, CopilotStatus } from "../shared/types"
+import { MongoMcpServer } from "./mongo-mcp-server"
+
+const mongoReadTools = ["mongo_list_databases", "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_count"] as const
+const mongoWriteTools = ["mongo_insert_one", "mongo_update_one", "mongo_delete_one"] as const
+
+export class OpencodeService {
+  private client?: OpencodeClient
+  private closeServer?: () => void
+  private sessionId?: string
+  private currentStatus: CopilotStatus = { state: "stopped" }
+  private startPromise?: Promise<CopilotStatus>
+  private promptInFlight = false
+
+  constructor(private readonly mongoMcp: MongoMcpServer) {}
+
+  status(): CopilotStatus {
+    return this.currentStatus
+  }
+
+  async start(): Promise<CopilotStatus> {
+    if (this.client) return this.currentStatus
+    if (this.startPromise) return this.startPromise
+    this.startPromise = this.startServer()
+    try {
+      return await this.startPromise
+    } finally {
+      this.startPromise = undefined
+    }
+  }
+
+  private async startServer(): Promise<CopilotStatus> {
+    this.currentStatus = { state: "starting" }
+    try {
+      if (process.resourcesPath) {
+        const bundledBinaryDirectory = join(process.resourcesPath, "opencode")
+        process.env.PATH = `${bundledBinaryDirectory}${delimiter}${process.env.PATH ?? ""}`
+      }
+      const username = "mongo-pilot"
+      const password = randomBytes(32).toString("base64url")
+      process.env.OPENCODE_SERVER_USERNAME = username
+      process.env.OPENCODE_SERVER_PASSWORD = password
+      const mongoMcp = await this.mongoMcp.start()
+      const server = await createOpencodeServer({
+        hostname: "127.0.0.1",
+        port: 0,
+        timeout: 10_000,
+        config: {
+          permission: {
+            "*": "deny",
+            question: "allow",
+            webfetch: "ask",
+            websearch: "ask",
+          },
+          mcp: {
+            mongo: {
+              type: "remote",
+              url: mongoMcp.url,
+              headers: { Authorization: `Bearer ${mongoMcp.token}` },
+              oauth: false,
+              enabled: true,
+              timeout: 30_000,
+            },
+          },
+        },
+      })
+      this.client = createOpencodeClient({
+        baseUrl: server.url,
+        throwOnError: true,
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+        },
+      })
+      this.closeServer = () => server.close()
+      const health = await this.client.global.health()
+      if (!health.data?.healthy) throw new Error("OpenCode server health check failed.")
+      this.currentStatus = { state: "ready", version: health.data?.version }
+    } catch (error) {
+      this.closeServer?.()
+      this.client = undefined
+      this.closeServer = undefined
+      this.currentStatus = { state: "error", message: this.message(error) }
+    }
+    return this.currentStatus
+  }
+
+  async stop(): Promise<CopilotStatus> {
+    if (this.sessionId && this.client) {
+      await this.client.session.abort({ sessionID: this.sessionId }).catch(() => undefined)
+    }
+    this.closeServer?.()
+    this.client = undefined
+    this.closeServer = undefined
+    this.sessionId = undefined
+    this.mongoMcp.clearGrant()
+    await this.mongoMcp.stop()
+    this.currentStatus = { state: "stopped" }
+    return this.currentStatus
+  }
+
+  async prompt(input: CopilotPromptInput): Promise<CopilotReply> {
+    if (this.promptInFlight) throw new Error("Wait for the current Pilot request to finish.")
+    if (!this.client) {
+      const status = await this.start()
+      if (status.state !== "ready") throw new Error(status.state === "error" ? status.message : "OpenCode is not ready.")
+    }
+    const client = this.client!
+    if (!this.sessionId) {
+      const created = await client.session.create({ title: "Mongo Pilot copilot" })
+      if (!created.data) throw new Error("OpenCode did not create a session.")
+      this.sessionId = created.data.id
+    }
+    const context = input.context
+    const hasMongoGrant = Boolean(context?.connectionId && context.accessMode)
+    const savedConnections = context?.availableConnections ?? []
+    const savedConnectionContext = savedConnections.length
+      ? `Saved connections available: ${savedConnections.map((connection) => `${connection.name} (${connection.host}, maximum access: ${connection.accessMode}${connection.favorite ? ", favorite" : ""})`).join("; ")}.`
+      : "There are no saved MongoDB connections."
+    const system = [
+      "You are the copilot inside Mongo Pilot, a MongoDB desktop application.",
+      "Be concise and explicit about uncertainty.",
+      hasMongoGrant
+        ? "Use the mongo_* tools when the user asks you to inspect or change the active database. Never exceed the granted access mode."
+        : `No live MongoDB connection is attached. Never claim that you ran a query or changed data. ${savedConnectionContext} You may answer questions about this saved connection metadata and should ask the user to select a connection before inspecting its data.`,
+      context?.accessMode ? `The active app access mode is ${context.accessMode}. Respect it in every recommendation.` : "",
+      context?.connectionName ? `Active connection: ${context.connectionName}.` : "",
+      context?.connectionHost ? `Active host: ${context.connectionHost}.` : "",
+      context?.database ? `Active database: ${context.database}.` : "",
+      context?.collection ? `Active collection: ${context.collection}.` : "",
+    ].filter(Boolean).join("\n")
+    const mode = context?.accessMode
+    const tools = Object.fromEntries([
+      ...mongoReadTools.map((tool) => [tool, hasMongoGrant] as const),
+      ...mongoWriteTools.map((tool) => [tool, Boolean(hasMongoGrant && mode !== "read-only")] as const),
+    ])
+    this.promptInFlight = true
+    if (hasMongoGrant) this.mongoMcp.setGrant({ connectionId: context!.connectionId!, accessMode: mode! })
+    try {
+      const result = await client.session.prompt({
+        sessionID: this.sessionId,
+        system,
+        tools,
+        parts: [{ type: "text", text: input.text }],
+      })
+      const text = (result.data?.parts ?? [])
+        .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("\n")
+      return { text: text || "OpenCode returned no text response.", sessionId: this.sessionId }
+    } finally {
+      this.mongoMcp.clearGrant()
+      this.promptInFlight = false
+    }
+  }
+
+  private message(error: unknown): string {
+    return error instanceof Error ? error.message : "OpenCode failed to start."
+  }
+}

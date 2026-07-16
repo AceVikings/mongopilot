@@ -1,0 +1,74 @@
+{
+  "name": "mongo-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A MongoDB desktop workspace with an OpenCode copilot.",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:mcp": "tsx scripts/mcp-smoke.ts",
+    "preview": "electron-vite preview",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist-mono": "5.2.8",
+    "@fontsource/poppins": "^5.2.7",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opencode-ai/sdk": "1.18.2",
+    "@phosphor-icons/react": "2.1.10",
+    "express": "^5.1.0",
+    "mongodb": "7.5.0",
+    "opencode-ai": "1.18.2",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "5.1.4",
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "sharp": "^0.34.5",
+    "tailwindcss": "4.3.3",
+    "tsx": "^4.20.6",
+    "typescript": "7.0.2",
+    "vite": "7.3.6"
+  },
+  "build": {
+    "appId": "com.mongopilot.desktop",
+    "productName": "Mongo Pilot",
+    "icon": "resources/icon.png",
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/opencode-ai/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/opencode-ai/bin/opencode.exe",
+        "to": "opencode/opencode"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "extraResources": [
+        {
+          "from": "node_modules/opencode-ai/bin/opencode.exe",
+          "to": "opencode/opencode.exe"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+
+# Electron, Vite, and packaging output
+out/
+dist/
+release/
+.vite/
+*.asar
+*.blockmap
+*.dmg
+*.AppImage
+
+# Tests and diagnostics
+coverage/
+.nyc_output/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+*.local
+electron-builder.env
+
+# Credentials and certificates
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+
+# Local Mongo Pilot data
+connections.json
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.db-journal
+
+# Local agent metadata
+.opencode/
+.tokensave/
+.superstack/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/
+*.tmp
