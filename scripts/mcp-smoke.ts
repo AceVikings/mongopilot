@@ -5,7 +5,7 @@ import { MongoMcpServer, type MongoAgentService } from "../src/main/mongo-mcp-se
 
 let activeMode: "read-only" | "read-write" = "read-only"
 const fakeMongo = {
-  getAccessMode: () => activeMode,
+  getAgentAccessMode: () => activeMode,
   agentListDatabases: async () => [{ name: "verified_database" }],
   agentListCollections: async () => [],
   agentFind: async () => [],
@@ -41,7 +41,7 @@ try {
 
   assert.throws(
     () => server.setGrant({ connectionId: "connection-1", accessMode: "read-write" }),
-    /read-only connection/,
+    /only grants read access to the agent/,
   )
 
   activeMode = "read-write"

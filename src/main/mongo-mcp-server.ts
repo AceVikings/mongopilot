@@ -5,18 +5,18 @@ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import express from "express"
 import { z } from "zod"
-import type { AccessMode } from "../shared/types"
+import type { AgentAccessMode } from "../shared/types"
 import type { MongoService } from "./mongo-service"
 
 interface AgentGrant {
   connectionId: string
-  accessMode: AccessMode
+  accessMode: AgentAccessMode
 }
 
 const documentSchema = z.record(z.unknown())
 
 export type MongoAgentService = Pick<MongoService,
-  | "getAccessMode"
+  | "getAgentAccessMode"
   | "agentListDatabases"
   | "agentListCollections"
   | "agentFind"
@@ -66,9 +66,9 @@ export class MongoMcpServer {
   }
 
   setGrant(grant: AgentGrant): void {
-    const actualMode = this.mongo.getAccessMode(grant.connectionId)
+    const actualMode = this.mongo.getAgentAccessMode(grant.connectionId)
     if (grant.accessMode === "read-write" && actualMode === "read-only") {
-      throw new Error("A read-only connection cannot grant read/write agent access.")
+      throw new Error("This connection only grants read access to the agent.")
     }
     this.grant = Object.freeze({ ...grant })
   }
@@ -108,15 +108,15 @@ export class MongoMcpServer {
     server.registerTool("insert_one", {
       description: "Insert one document into an authorized MongoDB collection.",
       inputSchema: { database: z.string().min(1), collection: z.string().min(1), document: documentSchema },
-    }, async ({ database, collection, document }) => this.result(await this.mongo.agentInsertOne(this.requireWrite().connectionId, database, collection, document)))
+    }, async ({ database, collection, document }) => this.result(await this.mongo.agentInsertOne(this.requireAgentWrite().connectionId, database, collection, document)))
     server.registerTool("update_one", {
       description: "Update one document matching a non-empty filter in an authorized MongoDB collection.",
       inputSchema: { database: z.string().min(1), collection: z.string().min(1), filter: documentSchema.refine((value) => Object.keys(value).length > 0), update: documentSchema },
-    }, async ({ database, collection, filter, update }) => this.result(await this.mongo.agentUpdateOne(this.requireWrite().connectionId, database, collection, filter, update)))
+    }, async ({ database, collection, filter, update }) => this.result(await this.mongo.agentUpdateOne(this.requireAgentWrite().connectionId, database, collection, filter, update)))
     server.registerTool("delete_one", {
       description: "Delete one document matching a non-empty filter in an authorized MongoDB collection.",
       inputSchema: { database: z.string().min(1), collection: z.string().min(1), filter: documentSchema.refine((value) => Object.keys(value).length > 0) },
-    }, async ({ database, collection, filter }) => this.result(await this.mongo.agentDeleteOne(this.requireWrite().connectionId, database, collection, filter)))
+    }, async ({ database, collection, filter }) => this.result(await this.mongo.agentDeleteOne(this.requireAgentWrite().connectionId, database, collection, filter)))
     return server
   }
 
@@ -124,7 +124,7 @@ export class MongoMcpServer {
     return this.requireGrant()
   }
 
-  private requireWrite(): AgentGrant {
+  private requireAgentWrite(): AgentGrant {
     const grant = this.requireGrant()
     if (grant.accessMode === "read-only") throw new Error("The active agent is not permitted to write MongoDB data.")
     return grant

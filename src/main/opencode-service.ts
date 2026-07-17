@@ -152,11 +152,11 @@ export class OpencodeService {
     }
     const context = input.context
     const connectionId = context?.connectionId
-    const mode = context?.accessMode
+    const mode = context?.agentAccessMode
     const hasMongoGrant = Boolean(connectionId && mode)
     const savedConnections = context?.availableConnections ?? []
     const savedConnectionContext = savedConnections.length
-      ? `Saved connections available: ${savedConnections.map((connection) => `${connection.name} (${connection.host}, maximum access: ${connection.accessMode}${connection.favorite ? ", favorite" : ""})`).join("; ")}.`
+      ? `Saved connections available: ${savedConnections.map((connection) => `${connection.name} (${connection.host}, maximum agent access: ${connection.agentAccessMode}${connection.favorite ? ", favorite" : ""})`).join("; ")}.`
       : "There are no saved MongoDB connections."
     const system = [
       "You are the copilot inside Mongo Pilot, a MongoDB desktop application.",
@@ -164,7 +164,7 @@ export class OpencodeService {
       hasMongoGrant
         ? "Use the mongo_* tools when the user asks you to inspect or change the active database. Never exceed the granted access mode."
         : `No live MongoDB connection is attached. Never claim that you ran a query or changed data. ${savedConnectionContext} You may answer questions about this saved connection metadata and should ask the user to select a connection before inspecting its data.`,
-      context?.accessMode ? `The active app access mode is ${context.accessMode}. Respect it in every recommendation.` : "",
+      context?.agentAccessMode ? `The active agent access mode is ${context.agentAccessMode}. Respect it for every tool call.` : "",
       context?.connectionName ? `Active connection: ${context.connectionName}.` : "",
       context?.connectionHost ? `Active host: ${context.connectionHost}.` : "",
       context?.database ? `Active database: ${context.database}.` : "",

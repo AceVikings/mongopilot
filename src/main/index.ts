@@ -1,17 +1,23 @@
 import { join } from "node:path"
 import { app, BrowserWindow, clipboard, ipcMain, shell } from "electron"
 import icon from "../../resources/icon.png?asset"
-import type { DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput } from "../shared/types"
+import type { AggregateInput, CollectionReportInput, CollectionTargetInput, DocumentTargetInput, FindInput, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput } from "../shared/types"
 import { ConnectionStore } from "./connection-store"
 import { MongoService } from "./mongo-service"
 import { MongoMcpServer } from "./mongo-mcp-server"
 import { OpencodeService } from "./opencode-service"
+import { UpdateService } from "./update-service"
 
 let mongo: MongoService
 let copilot: OpencodeService
+let updates: UpdateService
+const applicationName = "Mongo Pilot"
 const minimumWindowSize = { width: 1100, height: 720 }
 
-function createWindow(): void {
+app.setName(applicationName)
+process.title = applicationName
+
+function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -21,6 +27,7 @@ function createWindow(): void {
     maximizable: true,
     fullscreenable: true,
     show: false,
+    title: applicationName,
     titleBarStyle: "hiddenInset",
     backgroundColor: "#0a0d0a",
     icon,
@@ -38,6 +45,8 @@ function createWindow(): void {
   })
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL)
   else void window.loadFile(join(__dirname, "../renderer/index.html"))
+  updates.attachWindow(window)
+  return window
 }
 
 function registerIpc(store: ConnectionStore): void {
@@ -54,6 +63,10 @@ function registerIpc(store: ConnectionStore): void {
   ipcMain.handle("connections:disconnect", (_event, id: string) => mongo.disconnect(id))
   ipcMain.handle("database:listCollections", (_event, id: string, database: string) => mongo.listCollections(id, database))
   ipcMain.handle("database:find", (_event, input: FindInput) => mongo.find(input))
+  ipcMain.handle("database:aggregate", (_event, input: AggregateInput) => mongo.aggregate(input))
+  ipcMain.handle("database:listIndexes", (_event, input: CollectionTargetInput) => mongo.listIndexes(input))
+  ipcMain.handle("database:analyzeSchema", (_event, input: SchemaAnalysisInput) => mongo.analyzeSchema(input))
+  ipcMain.handle("database:generateReport", (_event, input: CollectionReportInput) => mongo.generateReport(input))
   ipcMain.handle("database:replaceDocument", (_event, input: ReplaceDocumentInput) => mongo.replaceDocument(input))
   ipcMain.handle("database:deleteDocument", (_event, input: DocumentTargetInput) => mongo.deleteDocument(input))
   ipcMain.handle("copilot:status", () => copilot.status())
@@ -61,10 +74,15 @@ function registerIpc(store: ConnectionStore): void {
   ipcMain.handle("copilot:stop", () => copilot.stop())
   ipcMain.handle("copilot:models", () => copilot.models())
   ipcMain.handle("copilot:prompt", (_event, input) => copilot.prompt(input))
+  ipcMain.handle("updates:status", () => updates.status())
+  ipcMain.handle("updates:check", () => updates.check())
+  ipcMain.handle("updates:download", () => updates.download())
+  ipcMain.handle("updates:install", () => updates.install())
 }
 
 void app.whenReady().then(() => {
   app.setAppUserModelId("com.mongopilot.desktop")
+  app.setAboutPanelOptions({ applicationName, applicationVersion: app.getVersion() })
   if (process.platform === "darwin") app.dock?.setIcon(icon)
   app.on("browser-window-created", (_event, window) => {
     window.setMinimumSize(minimumWindowSize.width, minimumWindowSize.height)
@@ -73,6 +91,7 @@ void app.whenReady().then(() => {
   const store = new ConnectionStore(join(app.getPath("userData"), "connections.json"))
   mongo = new MongoService(store)
   copilot = new OpencodeService(new MongoMcpServer(mongo))
+  updates = new UpdateService()
   registerIpc(store)
   createWindow()
   app.on("activate", () => {

@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   ArrowClockwise,
   BracketsCurly,
   CaretDown,
@@ -9,10 +10,12 @@ import {
   Code,
   Copy,
   Database,
+  DownloadSimple,
   DotsThree,
   FolderSimple,
   Funnel,
   HardDrives,
+  Key,
   Lightning,
   MagnifyingGlass,
   PaperPlaneTilt,
@@ -29,21 +32,32 @@ import { type FormEvent, useDeferredValue, useEffect, useRef, useState } from "r
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type {
-  AccessMode,
+  AgentAccessMode,
+  AggregateResult,
   CollectionInfo,
+  CollectionIndexInfo,
+  CollectionReportResult,
   CopilotModel,
   CopilotStatus,
   DatabaseInfo,
   FindResult,
   SavedConnection,
   SaveConnectionInput,
+  SchemaAnalysisResult,
+  UpdateStatus,
 } from "../../shared/types"
 import { getBsonDisplay, type BsonDisplayKind } from "./bson-format"
 
 type Message = { id: string; role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
+type CollectionTab = "Documents" | "Aggregations" | "Schema" | "Indexes" | "Reports"
 
 const pageSizes = [10, 20, 50, 100] as const
+const schemaSampleSizes = [50, 100, 250, 500, 1_000] as const
+const integerFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 })
+const defaultAggregationPipeline = `[
+  { "$limit": 20 }
+]`
 
 function createMessage(role: Message["role"], text: string): Message {
   return { id: crypto.randomUUID(), role, text }
@@ -147,12 +161,46 @@ function IconButton({ label, children, onClick }: { label: string; children: Rea
   )
 }
 
-function AccessBadge({ mode }: { mode: AccessMode }) {
-  const label = mode === "read-only" ? "READ" : "READ / WRITE"
+function AgentAccessBadge({ mode }: { mode: AgentAccessMode }) {
+  const label = mode === "read-only" ? "AGENT: READ" : "AGENT: READ / WRITE"
   return (
     <span className="rounded-sm border border-line bg-canvas px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-muted">
       {label}
     </span>
+  )
+}
+
+function UpdateControl({ status, onAction }: { status: UpdateStatus | null; onAction: () => void }) {
+  const state = status?.state
+  const disabled = state === "checking" || state === "downloading" || state === "disabled"
+  const label = (() => {
+    if (!status) return "Updates"
+    switch (status.state) {
+      case "disabled": return `v${status.currentVersion} development`
+      case "idle": return "Check for updates"
+      case "checking": return "Checking..."
+      case "not-available": return `v${status.currentVersion} up to date`
+      case "available": return `Download v${status.version}`
+      case "downloading": return `Downloading ${Math.round(status.percent)}%`
+      case "downloaded": return "Restart to update"
+      case "error": return "Retry update"
+    }
+  })()
+  const title = status?.state === "error" ? status.message : label
+
+  return (
+    <button
+      type="button"
+      title={title}
+      disabled={disabled}
+      onClick={onAction}
+      className="flex h-7 max-w-44 items-center gap-1.5 rounded border border-line bg-canvas px-2 font-mono text-[9px] text-muted transition-[border-color,background-color,color] duration-150 hover:border-line-strong hover:text-ink focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/25 focus-visible:outline-none disabled:cursor-default disabled:opacity-70"
+    >
+      {state === "available" || state === "downloading"
+        ? <DownloadSimple size={12} className="shrink-0 text-accent" aria-hidden="true" />
+        : <ArrowClockwise size={12} className={`shrink-0 text-accent ${state === "checking" ? "animate-spin" : ""}`} aria-hidden="true" />}
+      <span className="truncate">{label}</span>
+    </button>
   )
 }
 
@@ -229,10 +277,205 @@ function JsonDocument({ document }: { document: unknown }) {
   )
 }
 
+function SchemaPanel({
+  analysis,
+  loading,
+  error,
+  sampleSize,
+  onSampleSizeChange,
+  onRefresh,
+}: {
+  analysis: SchemaAnalysisResult | null
+  loading: boolean
+  error: string
+  sampleSize: number
+  onSampleSizeChange: (sampleSize: number) => void
+  onRefresh: () => void
+}) {
+  return (
+    <>
+      <div className="flex h-10 items-center gap-2 border-b border-line px-3">
+        <IconButton label="Refresh schema analysis" onClick={onRefresh}><ArrowClockwise size={15} aria-hidden="true" /></IconButton>
+        <div className="mx-1 h-4 border-l border-line" />
+        <label htmlFor="schema-sample-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Sample</label>
+        <select id="schema-sample-size" value={sampleSize} disabled={loading} onChange={(event) => onSampleSizeChange(Number(event.target.value))} className="h-7 rounded border border-line bg-canvas px-1.5 font-mono text-[10px] tabular-nums text-muted focus-visible:border-accent focus-visible:outline-none">
+          {schemaSampleSizes.map((size) => <option key={size} value={size}>{integerFormatter.format(size)}</option>)}
+        </select>
+        {analysis && <span className="ml-auto font-mono text-[9px] tabular-nums text-faint">{integerFormatter.format(analysis.sampleCount)} SAMPLED · {integerFormatter.format(analysis.durationMs)} MS</span>}
+      </div>
+      <div className="scrollbar-thin flex-1 overflow-auto p-3">
+        {loading ? (
+          <div role="status" aria-label="Analyzing schema" className="space-y-2">{[0, 1, 2, 3, 4].map((item) => <div key={item} className="h-10 animate-pulse rounded border border-line bg-panel" />)}</div>
+        ) : error ? (
+          <div role="alert" className="rounded-md border border-danger/30 bg-danger/10 p-4 text-xs text-danger">{error}</div>
+        ) : analysis?.fields.length ? (
+          <div className="overflow-hidden rounded-md border border-line bg-panel">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead className="sticky top-0 z-10 bg-raised text-[10px] uppercase tracking-wider text-muted">
+                <tr><th className="px-3 py-2 font-medium">Field path</th><th className="px-3 py-2 font-medium">BSON types</th><th className="px-3 py-2 text-right font-medium">Presence</th></tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {analysis.fields.map((field) => {
+                  const percent = analysis.sampleCount > 0 ? Math.round((field.presentCount / analysis.sampleCount) * 100) : 0
+                  return (
+                    <tr key={field.path} className="hover:bg-raised/50">
+                      <td className="px-3 py-2 font-mono text-ink">{field.path}</td>
+                      <td className="px-3 py-2"><div className="flex flex-wrap gap-1">{field.types.map((type) => <span key={type.name} className="rounded border border-line bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-accent-strong">{type.name}{field.types.length > 1 ? ` ${integerFormatter.format(type.count)}` : ""}</span>)}</div></td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted"><span className="text-ink">{percent}%</span> · {integerFormatter.format(field.presentCount)}/{integerFormatter.format(analysis.sampleCount)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-sm text-center"><Code size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">No schema fields found</h3><p className="mt-1 text-xs leading-5 text-muted">The sampled collection contains no documents or visible fields.</p></div></div>
+        )}
+      </div>
+    </>
+  )
+}
+
+function IndexesPanel({ indexes, loading, error, onRefresh }: { indexes: CollectionIndexInfo[]; loading: boolean; error: string; onRefresh: () => void }) {
+  return (
+    <>
+      <div className="flex h-10 items-center border-b border-line px-3">
+        <IconButton label="Refresh indexes" onClick={onRefresh}><ArrowClockwise size={15} aria-hidden="true" /></IconButton>
+        <span className="ml-auto font-mono text-[9px] tabular-nums text-faint">{integerFormatter.format(indexes.length)} INDEX{indexes.length === 1 ? "" : "ES"}</span>
+      </div>
+      <div className="scrollbar-thin flex-1 overflow-auto p-3">
+        {loading ? (
+          <div role="status" aria-label="Loading indexes" className="space-y-2">{[0, 1, 2].map((item) => <div key={item} className="h-20 animate-pulse rounded border border-line bg-panel" />)}</div>
+        ) : error ? (
+          <div role="alert" className="rounded-md border border-danger/30 bg-danger/10 p-4 text-xs text-danger">{error}</div>
+        ) : indexes.length ? (
+          <div className="space-y-2">
+            {indexes.map((index) => (
+              <article key={index.name} className="rounded-md border border-line bg-panel p-4">
+                <div className="flex items-start gap-3">
+                  <div className="grid size-8 shrink-0 place-items-center rounded bg-accent-soft text-accent"><Key size={15} aria-hidden="true" /></div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2"><h3 className="font-mono text-xs font-medium text-ink">{index.name}</h3>{index.unique && <span className="rounded border border-accent/30 px-1.5 py-0.5 font-mono text-[9px] text-accent">UNIQUE</span>}{index.sparse && <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[9px] text-muted">SPARSE</span>}{index.hidden && <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[9px] text-muted">HIDDEN</span>}</div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">{index.keys.map((key) => <span key={key.field} className="rounded bg-canvas px-2 py-1 font-mono text-[10px] text-muted"><span className="text-ink">{key.field}</span>: {key.direction}</span>)}</div>
+                    {typeof index.expireAfterSeconds === "number" && <p className="mt-2 font-mono text-[10px] tabular-nums text-warning">TTL {integerFormatter.format(index.expireAfterSeconds)} seconds</p>}
+                    {index.partialFilterExpression !== undefined && <pre className="scrollbar-thin mt-2 overflow-x-auto rounded bg-canvas p-2 font-mono text-[10px] leading-4 text-muted">{JSON.stringify(index.partialFilterExpression, null, 2)}</pre>}
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-sm text-center"><Key size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">No indexes found</h3><p className="mt-1 text-xs leading-5 text-muted">MongoDB returned no index definitions for this collection.</p></div></div>
+        )}
+      </div>
+    </>
+  )
+}
+
+function AggregationsPanel({
+  pipeline,
+  limit,
+  result,
+  loading,
+  error,
+  onPipelineChange,
+  onLimitChange,
+  onRun,
+}: {
+  pipeline: string
+  limit: number
+  result: AggregateResult | null
+  loading: boolean
+  error: string
+  onPipelineChange: (pipeline: string) => void
+  onLimitChange: (limit: number) => void
+  onRun: () => void
+}) {
+  return (
+    <>
+      <form onSubmit={(event) => { event.preventDefault(); onRun() }} className="border-b border-line bg-shell p-3">
+        <div className="rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+          <div className="flex h-8 items-center border-b border-line px-3 font-mono text-[10px] uppercase tracking-wider text-faint"><BracketsCurly size={13} className="mr-2" aria-hidden="true" />Extended JSON pipeline</div>
+          <label htmlFor="aggregation-pipeline" className="sr-only">Aggregation pipeline</label>
+          <textarea id="aggregation-pipeline" value={pipeline} onChange={(event) => onPipelineChange(event.target.value)} spellCheck={false} rows={8} className="scrollbar-thin block w-full resize-y bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none" />
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <label htmlFor="aggregation-limit" className="font-mono text-[9px] uppercase tracking-wider text-faint">Max results</label>
+          <select id="aggregation-limit" value={limit} disabled={loading} onChange={(event) => onLimitChange(Number(event.target.value))} className="h-8 rounded border border-line bg-canvas px-2 font-mono text-[10px] tabular-nums text-muted focus-visible:border-accent focus-visible:outline-none">
+            {pageSizes.map((size) => <option key={size} value={size}>{integerFormatter.format(size)}</option>)}
+          </select>
+          <button type="submit" disabled={loading} className="ml-auto flex h-9 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas hover:bg-accent-strong focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-shell focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"><Lightning size={14} weight="fill" aria-hidden="true" />{loading ? "Running..." : "Run pipeline"}</button>
+        </div>
+        {error && <div role="alert" className="mt-2 rounded border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">{error}</div>}
+      </form>
+      <div className="flex h-10 items-center border-b border-line px-3 font-mono text-[9px] tabular-nums text-faint">
+        {result ? `${integerFormatter.format(result.documents.length)} RESULT${result.documents.length === 1 ? "" : "S"} · ${integerFormatter.format(result.durationMs)} MS` : "NOT RUN"}
+      </div>
+      <div className="scrollbar-thin flex-1 overflow-auto p-3">
+        {loading ? (
+          <div role="status" aria-label="Running aggregation" className="space-y-2">{[0, 1, 2, 3].map((item) => <div key={item} className="h-20 animate-pulse rounded border border-line bg-panel" />)}</div>
+        ) : result?.documents.length ? (
+          <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-panel">
+            {result.documents.map((row, index) => (
+              <article key={row.id} className="grid grid-cols-[36px_minmax(0,1fr)] text-xs">
+                <div className="border-r border-line bg-shell py-3 text-center font-mono tabular-nums text-faint">{String(index + 1).padStart(2, "0")}</div>
+                <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3"><JsonDocument document={row.document} /></div>
+              </article>
+            ))}
+          </div>
+        ) : result ? (
+          <div className="grid min-h-52 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-sm text-center"><MagnifyingGlass size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">No aggregation results</h3><p className="mt-1 text-xs leading-5 text-muted">The pipeline completed successfully without returning documents.</p></div></div>
+        ) : (
+          <div className="grid min-h-52 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-sm text-center"><BracketsCurly size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">Run an aggregation</h3><p className="mt-1 text-xs leading-5 text-muted">Enter an Extended JSON pipeline. Output is capped and write stages are blocked.</p></div></div>
+        )}
+      </div>
+    </>
+  )
+}
+
+function ReportsPanel({ report, loading, error, sampleSize, onSampleSizeChange, onGenerate }: { report: CollectionReportResult | null; loading: boolean; error: string; sampleSize: number; onSampleSizeChange: (sampleSize: number) => void; onGenerate: () => void }) {
+  const mixedTypeFields = report?.schema.fields.filter((field) => field.types.length > 1) ?? []
+  const optionalFields = report?.schema.fields.filter((field) => field.presentCount < report.schema.sampleCount) ?? []
+  const uniqueIndexes = report?.indexes.filter((index) => index.unique).length ?? 0
+  const ttlIndexes = report?.indexes.filter((index) => index.expireAfterSeconds !== undefined).length ?? 0
+  return (
+    <>
+      <div className="flex h-10 items-center gap-2 border-b border-line px-3">
+        <IconButton label="Generate collection report" onClick={onGenerate}><ArrowClockwise size={15} aria-hidden="true" /></IconButton>
+        <div className="mx-1 h-4 border-l border-line" />
+        <label htmlFor="report-sample-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Schema sample</label>
+        <select id="report-sample-size" value={sampleSize} disabled={loading} onChange={(event) => onSampleSizeChange(Number(event.target.value))} className="h-7 rounded border border-line bg-canvas px-1.5 font-mono text-[10px] tabular-nums text-muted focus-visible:border-accent focus-visible:outline-none">
+          {schemaSampleSizes.map((size) => <option key={size} value={size}>{integerFormatter.format(size)}</option>)}
+        </select>
+        {report && <span className="ml-auto font-mono text-[9px] tabular-nums text-faint">GENERATED {new Date(report.generatedAt).toLocaleString()} · {integerFormatter.format(report.durationMs)} MS</span>}
+      </div>
+      <div className="scrollbar-thin flex-1 overflow-auto p-3">
+        {loading ? (
+          <div role="status" aria-label="Generating report" className="grid grid-cols-2 gap-2">{[0, 1, 2, 3].map((item) => <div key={item} className="h-24 animate-pulse rounded border border-line bg-panel" />)}</div>
+        ) : error ? (
+          <div role="alert" className="rounded-md border border-danger/30 bg-danger/10 p-4 text-xs text-danger">{error}</div>
+        ) : report ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+              {[{ label: "Documents", value: report.documentCount }, { label: "Sampled fields", value: report.schema.fields.length }, { label: "Mixed-type fields", value: mixedTypeFields.length }, { label: "Indexes", value: report.indexes.length }].map((metric) => (
+                <div key={metric.label} className="rounded-md border border-line bg-panel p-4"><p className="font-mono text-[9px] uppercase tracking-wider text-faint">{metric.label}</p><p className="mt-2 font-mono text-xl font-semibold tabular-nums text-ink">{integerFormatter.format(metric.value)}</p></div>
+              ))}
+            </div>
+            <section className="rounded-md border border-line bg-panel p-4"><h3 className="text-xs font-semibold">Schema findings</h3><div className="mt-3 grid gap-3 md:grid-cols-2"><div><p className="font-mono text-[9px] uppercase tracking-wider text-faint">Mixed BSON types</p>{mixedTypeFields.length ? <div className="mt-2 flex flex-wrap gap-1">{mixedTypeFields.map((field) => <span key={field.path} className="rounded border border-warning/30 bg-warning/10 px-2 py-1 font-mono text-[10px] text-warning">{field.path}: {field.types.map((type) => type.name).join(" / ")}</span>)}</div> : <p className="mt-2 text-xs text-muted">No mixed-type fields were found in the sample.</p>}</div><div><p className="font-mono text-[9px] uppercase tracking-wider text-faint">Optional fields</p><p className="mt-2 font-mono text-xs tabular-nums text-muted">{integerFormatter.format(optionalFields.length)} of {integerFormatter.format(report.schema.fields.length)} sampled paths are not present in every sampled document.</p></div></div></section>
+            <section className="rounded-md border border-line bg-panel p-4"><h3 className="text-xs font-semibold">Index summary</h3><div className="mt-3 flex flex-wrap gap-2 font-mono text-[10px] text-muted"><span className="rounded bg-canvas px-2 py-1"><span className="tabular-nums text-ink">{integerFormatter.format(report.indexes.length)}</span> total</span><span className="rounded bg-canvas px-2 py-1"><span className="tabular-nums text-ink">{integerFormatter.format(uniqueIndexes)}</span> unique</span><span className="rounded bg-canvas px-2 py-1"><span className="tabular-nums text-ink">{integerFormatter.format(ttlIndexes)}</span> TTL</span></div></section>
+          </div>
+        ) : (
+          <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-sm text-center"><Code size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">Generate a collection report</h3><p className="mt-1 text-xs leading-5 text-muted">Build a live summary from document counts, a bounded schema sample, and index metadata.</p><button type="button" onClick={onGenerate} className="mt-4 h-9 rounded-md bg-accent px-4 text-xs font-semibold text-canvas hover:bg-accent-strong focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">Generate report</button></div></div>
+        )}
+      </div>
+    </>
+  )
+}
+
 function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: (connection: SavedConnection) => void }) {
   const [name, setName] = useState("")
   const [uri, setUri] = useState("")
-  const [accessMode, setAccessMode] = useState<AccessMode>("read-only")
+  const [agentAccessMode, setAgentAccessMode] = useState<AgentAccessMode>("read-only")
   const [favorite, setFavorite] = useState(false)
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
@@ -252,8 +495,8 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setSaving(true)
     setError("")
     try {
-      if (!window.mongoPilot) throw new Error("Connection storage is available in the Electron app.")
-      const input: SaveConnectionInput = { name: name.trim() || "MongoDB deployment", uri, accessMode, favorite }
+      if (!window.mongoPilot) throw new Error("Connection storage is available in the Mongo Pilot desktop app.")
+      const input: SaveConnectionInput = { name: name.trim() || "MongoDB deployment", uri, agentAccessMode, favorite }
       onSaved(await window.mongoPilot.connections.save(input))
       onClose()
     } catch (reason) {
@@ -314,14 +557,14 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
             <legend className="text-xs font-medium">Agent access</legend>
             <div className="grid grid-cols-2 gap-2">
               {(["read-only", "read-write"] as const).map((mode) => (
-                <label key={mode} className={`flex min-h-20 cursor-pointer flex-col justify-between rounded-md border p-3 transition-[border-color,background-color] duration-150 ease-product ${accessMode === mode ? "border-accent bg-accent-soft" : "border-line bg-canvas hover:border-line-strong"}`}>
-                  <input className="sr-only" type="radio" name="access-mode" value={mode} checked={accessMode === mode} onChange={() => setAccessMode(mode)} />
-                  <ShieldCheck size={18} className={accessMode === mode ? "text-accent" : "text-muted"} aria-hidden="true" />
+                <label key={mode} className={`flex min-h-20 cursor-pointer flex-col justify-between rounded-md border p-3 transition-[border-color,background-color] duration-150 ease-product ${agentAccessMode === mode ? "border-accent bg-accent-soft" : "border-line bg-canvas hover:border-line-strong"}`}>
+                  <input className="sr-only" type="radio" name="agent-access-mode" value={mode} checked={agentAccessMode === mode} onChange={() => setAgentAccessMode(mode)} />
+                  <ShieldCheck size={18} className={agentAccessMode === mode ? "text-accent" : "text-muted"} aria-hidden="true" />
                   <span className="text-xs font-medium capitalize">{mode.replace("-", " ")}</span>
                 </label>
               ))}
             </div>
-            <p className="text-xs text-muted">Pilot only receives MongoDB tools allowed by this mode. Every operation is checked again in the desktop process; MongoDB roles remain authoritative.</p>
+            <p className="text-xs text-muted">This mode only limits Pilot. You can always attempt direct edits in Mongo Pilot; MongoDB user roles remain authoritative.</p>
           </fieldset>
           <label className="flex min-h-10 cursor-pointer items-center gap-3 text-xs text-muted">
             <input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} className="size-4 accent-accent" />
@@ -352,11 +595,11 @@ function CopilotPanel({
     connectionHost?: string
     database: string
     collection: string
-    accessMode: AccessMode
-    availableConnections: Array<{ name: string; host: string; accessMode: AccessMode; favorite: boolean }>
+    agentAccessMode: AgentAccessMode
+    availableConnections: Array<{ name: string; host: string; agentAccessMode: AgentAccessMode; favorite: boolean }>
   }
   canWrite: boolean
-  onModeChange: (mode: AccessMode) => void
+  onModeChange: (mode: AgentAccessMode) => void
 }) {
   const [messages, setMessages] = useState<Message[]>(() => [
     createMessage("assistant", "I can draft filters, aggregation pipelines, schema checks, and report plans. Connect a deployment and I can use MongoDB tools within its agent access mode."),
@@ -421,7 +664,7 @@ function CopilotPanel({
     setPrompt("")
     setSending(true)
     try {
-      if (!window.mongoPilot) throw new Error("OpenCode is available in the Electron app.")
+      if (!window.mongoPilot) throw new Error("OpenCode is available in the Mongo Pilot desktop app.")
       if (localStatus.state !== "ready") setLocalStatus(await window.mongoPilot.copilot.start())
       const reply = await window.mongoPilot.copilot.prompt({
         text,
@@ -446,10 +689,10 @@ function CopilotPanel({
             <p className="truncate font-mono text-xs text-ink">{context.connectionId ? `${context.database}.${context.collection}` : "Saved connections"}</p>
             <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
               <span className={`size-1.5 rounded-full ${localStatus.state === "ready" ? "bg-accent" : localStatus.state === "error" ? "bg-danger" : "bg-warning"}`} />
-              OpenCode {localStatus.state} · {context.connectionId ? `tools scoped to ${context.accessMode}` : `${context.availableConnections.length} available`}
+              OpenCode {localStatus.state} · {context.connectionId ? `tools scoped to ${context.agentAccessMode}` : `${context.availableConnections.length} available`}
             </p>
           </div>
-          <AccessBadge mode={context.accessMode} />
+          <AgentAccessBadge mode={context.agentAccessMode} />
         </div>
       </div>
       <div className="scrollbar-thin flex-1 space-y-4 overflow-y-auto p-3" aria-live="polite">
@@ -596,16 +839,16 @@ function CopilotPanel({
                 className="flex h-7 items-center gap-1.5 rounded border border-line bg-canvas px-2 text-[10px] font-medium text-muted transition-[border-color,background-color,color] duration-150 ease-product hover:border-line-strong hover:text-ink focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/25 focus-visible:outline-none"
               >
                 <ShieldCheck size={12} className="text-accent" aria-hidden="true" />
-                Agent: {context.accessMode === "read-only" ? "Read" : "Read / write"}
+                Agent: {context.agentAccessMode === "read-only" ? "Read" : "Read / write"}
                 <CaretDown size={10} aria-hidden="true" />
               </button>
               {modeMenuOpen && (
                 <div role="menu" aria-label="Agent mode" className="absolute bottom-full left-0 z-10 mb-2 w-40 overflow-hidden rounded-md border border-line-strong bg-raised p-1 shadow-xl shadow-canvas/50">
-                  <button type="button" role="menuitemradio" aria-checked={context.accessMode === "read-only"} onClick={() => { onModeChange("read-only"); setModeMenuOpen(false) }} className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-[11px] text-muted hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
-                    <Check size={12} className={context.accessMode === "read-only" ? "opacity-100" : "opacity-0"} aria-hidden="true" /> Read
+                  <button type="button" role="menuitemradio" aria-checked={context.agentAccessMode === "read-only"} onClick={() => { onModeChange("read-only"); setModeMenuOpen(false) }} className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-[11px] text-muted hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
+                    <Check size={12} className={context.agentAccessMode === "read-only" ? "opacity-100" : "opacity-0"} aria-hidden="true" /> Read
                   </button>
-                  <button type="button" role="menuitemradio" aria-checked={context.accessMode === "read-write"} disabled={!canWrite} onClick={() => { onModeChange("read-write"); setModeMenuOpen(false) }} className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-[11px] text-muted hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40">
-                    <Check size={12} className={context.accessMode === "read-write" ? "opacity-100" : "opacity-0"} aria-hidden="true" /> Read / write
+                  <button type="button" role="menuitemradio" aria-checked={context.agentAccessMode === "read-write"} disabled={!canWrite} onClick={() => { onModeChange("read-write"); setModeMenuOpen(false) }} className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-[11px] text-muted hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40">
+                    <Check size={12} className={context.agentAccessMode === "read-write" ? "opacity-100" : "opacity-0"} aria-hidden="true" /> Read / write
                   </button>
                 </div>
               )}
@@ -639,20 +882,41 @@ export default function App() {
   const [error, setError] = useState("")
   const [duration, setDuration] = useState<number | null>(null)
   const [queryRan, setQueryRan] = useState(false)
+  const [activeCollectionTab, setActiveCollectionTab] = useState<CollectionTab>("Documents")
+  const [schemaAnalysis, setSchemaAnalysis] = useState<SchemaAnalysisResult | null>(null)
+  const [schemaSampleSize, setSchemaSampleSize] = useState(100)
+  const [schemaLoading, setSchemaLoading] = useState(false)
+  const [schemaError, setSchemaError] = useState("")
+  const [indexes, setIndexes] = useState<CollectionIndexInfo[]>([])
+  const [indexesLoaded, setIndexesLoaded] = useState(false)
+  const [indexesLoading, setIndexesLoading] = useState(false)
+  const [indexesError, setIndexesError] = useState("")
+  const [aggregationPipeline, setAggregationPipeline] = useState(defaultAggregationPipeline)
+  const [aggregationLimit, setAggregationLimit] = useState(20)
+  const [aggregationResult, setAggregationResult] = useState<AggregateResult | null>(null)
+  const [aggregationLoading, setAggregationLoading] = useState(false)
+  const [aggregationError, setAggregationError] = useState("")
+  const [report, setReport] = useState<CollectionReportResult | null>(null)
+  const [reportSampleSize, setReportSampleSize] = useState(250)
+  const [reportLoading, setReportLoading] = useState(false)
+  const [reportError, setReportError] = useState("")
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null)
   const [editDocumentText, setEditDocumentText] = useState("")
   const [copiedDocumentId, setCopiedDocumentId] = useState<string | null>(null)
   const [mutatingDocumentId, setMutatingDocumentId] = useState<string | null>(null)
   const [pendingDeleteDocumentId, setPendingDeleteDocumentId] = useState<string | null>(null)
   const [connectionMenuId, setConnectionMenuId] = useState<string | null>(null)
+  const [disconnectingConnection, setDisconnectingConnection] = useState(false)
   const [pendingRemoveConnection, setPendingRemoveConnection] = useState<SavedConnection | null>(null)
   const [removingConnectionId, setRemovingConnectionId] = useState<string | null>(null)
   const [connectionNotice, setConnectionNotice] = useState<{ message: string; error: boolean } | null>(null)
   const [copilotStatus, setCopilotStatus] = useState<CopilotStatus>({ state: "starting" })
-  const [agentMode, setAgentMode] = useState<AccessMode>("read-only")
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
+  const [agentMode, setAgentMode] = useState<AgentAccessMode>("read-only")
   const [panelWidths, setPanelWidths] = useState(() => ({ left: readPanelWidth("left"), right: readPanelWidth("right") }))
   const deleteCancelRef = useRef<HTMLButtonElement>(null)
   const removeCancelRef = useRef<HTMLButtonElement>(null)
+  const collectionTargetRef = useRef("")
 
   const leftPanelMax = Math.max(
     panelLimits.left.min,
@@ -670,6 +934,15 @@ export default function App() {
     void window.mongoPilot.copilot.start().then(setCopilotStatus).catch((reason) => {
       setCopilotStatus({ state: "error", message: reason instanceof Error ? reason.message : "OpenCode failed to start." })
     })
+  }, [])
+
+  useEffect(() => {
+    if (!window.mongoPilot) return
+    const unsubscribe = window.mongoPilot.updates.onStatus(setUpdateStatus)
+    void window.mongoPilot.updates.status().then(setUpdateStatus).catch((reason: unknown) => {
+      setUpdateStatus({ state: "error", currentVersion: "unknown", message: reason instanceof Error ? reason.message : "Could not load update status." })
+    })
+    return unsubscribe
   }, [])
 
   useEffect(() => {
@@ -730,6 +1003,26 @@ export default function App() {
     }, 2_500)
   }
 
+  async function handleUpdateAction(): Promise<void> {
+    if (!updateStatus || !window.mongoPilot) return
+    try {
+      if (updateStatus.state === "downloaded") {
+        await window.mongoPilot.updates.install()
+        return
+      }
+      const next = updateStatus.state === "available"
+        ? await window.mongoPilot.updates.download()
+        : await window.mongoPilot.updates.check()
+      setUpdateStatus(next)
+    } catch (reason) {
+      setUpdateStatus({
+        state: "error",
+        currentVersion: updateStatus.currentVersion,
+        message: reason instanceof Error ? reason.message : "The update operation failed.",
+      })
+    }
+  }
+
   function clearWorkspace(): void {
     setActiveConnection(null)
     setDatabases([])
@@ -739,17 +1032,48 @@ export default function App() {
     setDocuments([])
     setDuration(null)
     setQueryRan(false)
+    setActiveCollectionTab("Documents")
+    setSchemaAnalysis(null)
+    setSchemaLoading(false)
+    setSchemaError("")
+    setIndexes([])
+    setIndexesLoaded(false)
+    setIndexesLoading(false)
+    setIndexesError("")
+    setAggregationResult(null)
+    setAggregationLoading(false)
+    setAggregationError("")
+    setReport(null)
+    setReportLoading(false)
+    setReportError("")
+    collectionTargetRef.current = ""
     setTotal(0)
     setPage(1)
     setEditingDocumentId(null)
     setPendingDeleteDocumentId(null)
     setAgentMode("read-only")
+    setConnectionMenuId(null)
+  }
+
+  async function disconnectActiveConnection(): Promise<void> {
+    if (!activeConnection || !window.mongoPilot || disconnectingConnection) return
+    setDisconnectingConnection(true)
+    try {
+      await window.mongoPilot.connections.disconnect(activeConnection.id)
+      const connectionName = activeConnection.name
+      clearWorkspace()
+      showConnectionNotice(`Disconnected from ${connectionName}.`)
+    } catch (reason) {
+      showConnectionNotice(reason instanceof Error ? reason.message : "Could not disconnect this connection.", true)
+    } finally {
+      setDisconnectingConnection(false)
+    }
   }
 
   async function copyConnectionString(connection: SavedConnection): Promise<void> {
     setConnectionMenuId(null)
     try {
-      if (!window.mongoPilot) throw new Error("Connection actions are available in the Electron app.")
+      if (!window.mongoPilot) throw new Error("Connection actions are available in the Mongo Pilot desktop app.")
       await window.mongoPilot.connections.copyUri(connection.id)
       showConnectionNotice(`Copied ${connection.name} connection string.`)
     } catch (reason) {
@@ -760,7 +1084,7 @@ export default function App() {
   async function removeConnection(connection: SavedConnection): Promise<void> {
     setRemovingConnectionId(connection.id)
     try {
-      if (!window.mongoPilot) throw new Error("Connection actions are available in the Electron app.")
+      if (!window.mongoPilot) throw new Error("Connection actions are available in the Mongo Pilot desktop app.")
       await window.mongoPilot.connections.remove(connection.id)
       setConnections((current) => current.filter((item) => item.id !== connection.id))
       if (activeConnection?.id === connection.id) clearWorkspace()
@@ -777,10 +1101,10 @@ export default function App() {
     setConnectionMenuId(null)
     setError("")
     try {
-      if (!window.mongoPilot) throw new Error("Connections are available in the Electron app.")
+      if (!window.mongoPilot) throw new Error("Connections are available in the Mongo Pilot desktop app.")
       const result = await window.mongoPilot.connections.connect(connection.id)
       setActiveConnection(result.connection)
-      setAgentMode("read-only")
+      setAgentMode(result.connection.agentAccessMode)
       setDatabases(result.databases)
       setDocuments([])
       setDuration(null)
@@ -810,6 +1134,21 @@ export default function App() {
       if (firstCollection) await selectCollection(connectionId, name, firstCollection)
       else {
         setSelectedCollection("")
+        setActiveCollectionTab("Documents")
+        setSchemaAnalysis(null)
+        setSchemaLoading(false)
+        setSchemaError("")
+        setIndexes([])
+        setIndexesLoaded(false)
+        setIndexesLoading(false)
+        setIndexesError("")
+        setAggregationResult(null)
+        setAggregationLoading(false)
+        setAggregationError("")
+        setReport(null)
+        setReportLoading(false)
+        setReportError("")
+        collectionTargetRef.current = ""
         setDocuments([])
         setDuration(null)
         setQueryRan(false)
@@ -822,6 +1161,7 @@ export default function App() {
   }
 
   async function selectCollection(connectionId: string, database: string, collection: string) {
+    collectionTargetRef.current = `${connectionId}:${database}:${collection}`
     const preferences = readCollectionPreferences(connectionId, database, collection)
     setSelectedDatabase(database)
     setSelectedCollection(collection)
@@ -832,6 +1172,20 @@ export default function App() {
     setTotal(0)
     setDocuments([])
     setQueryRan(false)
+    setActiveCollectionTab("Documents")
+    setSchemaAnalysis(null)
+    setSchemaLoading(false)
+    setSchemaError("")
+    setIndexes([])
+    setIndexesLoaded(false)
+    setIndexesLoading(false)
+    setIndexesError("")
+    setAggregationResult(null)
+    setAggregationLoading(false)
+    setAggregationError("")
+    setReport(null)
+    setReportLoading(false)
+    setReportError("")
     setEditingDocumentId(null)
     setPendingDeleteDocumentId(null)
     await runQuery({ connectionId, database, collection, filter: "{}", sort: preferences.sort, pageSize: preferences.pageSize, page: 1 })
@@ -876,6 +1230,96 @@ export default function App() {
     }
   }
 
+  async function loadSchema(sampleSize = schemaSampleSize): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot) return
+    const target = `${activeConnection.id}:${selectedDatabase}:${selectedCollection}`
+    setSchemaLoading(true)
+    setSchemaError("")
+    try {
+      const result = await window.mongoPilot.database.analyzeSchema({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+        sampleSize,
+      })
+      if (collectionTargetRef.current === target) setSchemaAnalysis(result)
+    } catch (reason) {
+      if (collectionTargetRef.current === target) setSchemaError(reason instanceof Error ? reason.message : "Could not analyze this collection schema.")
+    } finally {
+      if (collectionTargetRef.current === target) setSchemaLoading(false)
+    }
+  }
+
+  async function loadIndexes(): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot) return
+    const target = `${activeConnection.id}:${selectedDatabase}:${selectedCollection}`
+    setIndexesLoading(true)
+    setIndexesError("")
+    try {
+      const result = await window.mongoPilot.database.listIndexes({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+      })
+      if (collectionTargetRef.current === target) {
+        setIndexes(result)
+        setIndexesLoaded(true)
+      }
+    } catch (reason) {
+      if (collectionTargetRef.current === target) setIndexesError(reason instanceof Error ? reason.message : "Could not load collection indexes.")
+    } finally {
+      if (collectionTargetRef.current === target) setIndexesLoading(false)
+    }
+  }
+
+  async function runAggregation(): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot) return
+    const target = `${activeConnection.id}:${selectedDatabase}:${selectedCollection}`
+    setAggregationLoading(true)
+    setAggregationError("")
+    try {
+      const result = await window.mongoPilot.database.aggregate({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+        pipeline: aggregationPipeline,
+        limit: aggregationLimit,
+      })
+      if (collectionTargetRef.current === target) setAggregationResult(result)
+    } catch (reason) {
+      if (collectionTargetRef.current === target) setAggregationError(reason instanceof Error ? reason.message : "Could not run this aggregation pipeline.")
+    } finally {
+      if (collectionTargetRef.current === target) setAggregationLoading(false)
+    }
+  }
+
+  async function generateReport(sampleSize = reportSampleSize): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot) return
+    const target = `${activeConnection.id}:${selectedDatabase}:${selectedCollection}`
+    setReportLoading(true)
+    setReportError("")
+    try {
+      const result = await window.mongoPilot.database.generateReport({
+        connectionId: activeConnection.id,
+        database: selectedDatabase,
+        collection: selectedCollection,
+        sampleSize,
+      })
+      if (collectionTargetRef.current === target) setReport(result)
+    } catch (reason) {
+      if (collectionTargetRef.current === target) setReportError(reason instanceof Error ? reason.message : "Could not generate this collection report.")
+    } finally {
+      if (collectionTargetRef.current === target) setReportLoading(false)
+    }
+  }
+
+  function selectCollectionTab(tab: CollectionTab): void {
+    setActiveCollectionTab(tab)
+    if (tab === "Schema" && !schemaAnalysis && !schemaLoading) void loadSchema()
+    if (tab === "Indexes" && !indexesLoaded && !indexesLoading) void loadIndexes()
+    if (tab === "Reports" && !report && !reportLoading) void generateReport()
+  }
+
   async function copyDocument(id: string, document: unknown): Promise<void> {
     try {
       await navigator.clipboard.writeText(JSON.stringify(document, null, 2))
@@ -887,10 +1331,6 @@ export default function App() {
   }
 
   function editDocument(id: string, document: unknown): void {
-    if (activeConnection?.accessMode !== "read-write") {
-      setError("This connection is read-only. Reconnect with read/write access to edit documents.")
-      return
-    }
     setError("")
     setEditingDocumentId(id)
     setEditDocumentText(JSON.stringify(document, null, 2))
@@ -898,10 +1338,6 @@ export default function App() {
 
   async function saveDocument(id: string): Promise<void> {
     if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot) return
-    if (activeConnection.accessMode !== "read-write") {
-      setError("This connection is read-only. Reconnect with read/write access to save documents.")
-      return
-    }
     setMutatingDocumentId(id)
     setError("")
     try {
@@ -922,10 +1358,6 @@ export default function App() {
   }
 
   function requestDeleteDocument(id: string): void {
-    if (activeConnection?.accessMode !== "read-write") {
-      setError("This connection is read-only. Reconnect with read/write access to delete documents.")
-      return
-    }
     setError("")
     setPendingDeleteDocumentId(id)
   }
@@ -976,8 +1408,8 @@ export default function App() {
     connectionHost: activeConnection?.host,
     database: activeConnection ? selectedDatabase : "",
     collection: activeConnection ? selectedCollection : "",
-    accessMode: agentMode,
-    availableConnections: connections.map(({ name, host, accessMode, favorite }) => ({ name, host, accessMode, favorite })),
+    agentAccessMode: agentMode,
+    availableConnections: connections.map(({ name, host, agentAccessMode, favorite }) => ({ name, host, agentAccessMode, favorite })),
   }
 
   return (
@@ -987,7 +1419,10 @@ export default function App() {
         <div className="h-full border-x border-line max-lg:border-r-0" />
         <div className="flex items-center justify-between px-3 max-lg:hidden">
           <span className="flex items-center gap-2 text-xs font-semibold"><Sparkle size={14} weight="fill" className="text-accent" aria-hidden="true" /> Pilot</span>
-          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-muted"><span className={`size-1.5 rounded-full ${copilotStatus.state === "ready" ? "bg-accent" : "bg-line-strong"}`} />{copilotStatus.state}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            <UpdateControl status={updateStatus} onAction={() => void handleUpdateAction()} />
+            <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-muted"><span className={`size-1.5 rounded-full ${copilotStatus.state === "ready" ? "bg-accent" : "bg-line-strong"}`} />{copilotStatus.state}</span>
+          </div>
         </div>
       </header>
 
@@ -1072,11 +1507,15 @@ export default function App() {
         <section className="flex min-h-0 min-w-0 flex-col bg-canvas">
           <header className="flex h-12 items-center gap-3 border-b border-line px-4">
             {activeConnection ? (
-              <div className="flex min-w-0 items-center gap-2 text-xs"><span className="truncate text-muted">{activeConnection.name}</span>{selectedDatabase && <><CaretRight size={11} className="text-faint" aria-hidden="true" /><span className="truncate font-medium">{selectedDatabase}{selectedCollection ? `.${selectedCollection}` : ""}</span></>}</div>
+              <div className="flex min-w-0 items-center gap-2 text-xs">
+                <button type="button" disabled={disconnectingConnection} onClick={() => void disconnectActiveConnection()} className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"><ArrowLeft size={13} aria-hidden="true" />Connections</button>
+                <div className="h-4 border-l border-line" />
+                <span className="truncate text-muted">{activeConnection.name}</span>{selectedDatabase && <><CaretRight size={11} className="text-faint" aria-hidden="true" /><span className="truncate font-medium">{selectedDatabase}{selectedCollection ? `.${selectedCollection}` : ""}</span></>}
+              </div>
             ) : (
               <span className="text-xs font-medium">MongoDB workspace</span>
             )}
-            {activeConnection && <div className="ml-auto"><AccessBadge mode={context.accessMode} /></div>}
+            {activeConnection && <div className="ml-auto"><AgentAccessBadge mode={context.agentAccessMode} /></div>}
           </header>
           {!activeConnection ? (
             <div className="grid flex-1 place-items-center p-8">
@@ -1089,6 +1528,12 @@ export default function App() {
             </div>
           ) : (
             <>
+              <nav aria-label="Collection views" className="flex h-11 shrink-0 items-end gap-5 border-b border-line px-4">
+                {(["Documents", "Aggregations", "Schema", "Indexes", "Reports"] as const).map((tab) => (
+                  <button key={tab} type="button" disabled={!selectedCollection} onClick={() => selectCollectionTab(tab)} className={`h-11 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${activeCollectionTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
+                ))}
+              </nav>
+              {activeCollectionTab === "Documents" ? <>
               <div className="border-b border-line bg-shell p-3">
                 <div className="grid grid-cols-[minmax(0,2fr)_minmax(140px,1fr)_auto] items-start gap-2">
                   <div className="min-w-0 flex-1 rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
@@ -1163,10 +1608,10 @@ export default function App() {
                             <button type="button" aria-label="Copy document" title="Copy" onClick={() => void copyDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">
                               {copiedDocumentId === row.id ? <Check size={13} weight="bold" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
                             </button>
-                            <button type="button" aria-label="Edit document" title={activeConnection?.accessMode === "read-only" ? "Requires a read/write connection" : "Edit"} disabled={mutatingDocumentId === row.id} onClick={() => editDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
+                            <button type="button" aria-label="Edit document" title="Edit" disabled={mutatingDocumentId === row.id} onClick={() => editDocument(row.id, row.document)} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
                               <PencilSimple size={13} aria-hidden="true" />
                             </button>
-                            <button type="button" aria-label="Delete document" title={activeConnection?.accessMode === "read-only" ? "Requires a read/write connection" : "Delete"} disabled={mutatingDocumentId === row.id} onClick={() => requestDeleteDocument(row.id)} className="grid size-7 place-items-center rounded text-muted hover:bg-danger/15 hover:text-danger focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
+                            <button type="button" aria-label="Delete document" title="Delete" disabled={mutatingDocumentId === row.id} onClick={() => requestDeleteDocument(row.id)} className="grid size-7 place-items-center rounded text-muted hover:bg-danger/15 hover:text-danger focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait disabled:opacity-35">
                               <Trash size={13} aria-hidden="true" />
                             </button>
                           </div>
@@ -1184,6 +1629,46 @@ export default function App() {
                   </div>
                 )}
               </div>
+              </> : activeCollectionTab === "Aggregations" ? (
+                <AggregationsPanel
+                  pipeline={aggregationPipeline}
+                  limit={aggregationLimit}
+                  result={aggregationResult}
+                  loading={aggregationLoading}
+                  error={aggregationError}
+                  onPipelineChange={setAggregationPipeline}
+                  onLimitChange={setAggregationLimit}
+                  onRun={() => void runAggregation()}
+                />
+              ) : activeCollectionTab === "Schema" ? (
+                <SchemaPanel
+                  analysis={schemaAnalysis}
+                  loading={schemaLoading}
+                  error={schemaError}
+                  sampleSize={schemaSampleSize}
+                  onSampleSizeChange={(sampleSize) => {
+                    setSchemaSampleSize(sampleSize)
+                    setSchemaAnalysis(null)
+                    void loadSchema(sampleSize)
+                  }}
+                  onRefresh={() => void loadSchema()}
+                />
+              ) : activeCollectionTab === "Indexes" ? (
+                <IndexesPanel indexes={indexes} loading={indexesLoading} error={indexesError} onRefresh={() => void loadIndexes()} />
+              ) : (
+                <ReportsPanel
+                  report={report}
+                  loading={reportLoading}
+                  error={reportError}
+                  sampleSize={reportSampleSize}
+                  onSampleSizeChange={(sampleSize) => {
+                    setReportSampleSize(sampleSize)
+                    setReport(null)
+                    void generateReport(sampleSize)
+                  }}
+                  onGenerate={() => void generateReport()}
+                />
+              )}
             </>
           )}
         </section>
@@ -1191,7 +1676,7 @@ export default function App() {
         <CopilotPanel
           status={copilotStatus}
           context={context}
-          canWrite={activeConnection?.accessMode === "read-write"}
+          canWrite={activeConnection?.agentAccessMode === "read-write"}
           onModeChange={setAgentMode}
         />
         <div style={{ left: panelWidths.left }} className="absolute inset-y-0 z-30">

@@ -3,14 +3,15 @@ import { readFile, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { mkdir } from "node:fs/promises"
 import { safeStorage } from "electron"
-import type { SaveConnectionInput, SavedConnection } from "../shared/types"
+import type { AgentAccessMode, SaveConnectionInput, SavedConnection } from "../shared/types"
 
 interface StoredConnection extends SavedConnection {
   encryptedUri: string
 }
 
-type PersistedConnection = Omit<StoredConnection, "accessMode"> & {
-  accessMode: SavedConnection["accessMode"] | "write-only"
+type PersistedConnection = Omit<StoredConnection, "agentAccessMode"> & {
+  agentAccessMode?: AgentAccessMode
+  accessMode?: AgentAccessMode | "write-only"
 }
 
 export class ConnectionStore {
@@ -31,7 +32,7 @@ export class ConnectionStore {
       id: existing?.id ?? randomUUID(),
       name: input.name.trim(),
       host: this.hostFromUri(input.uri),
-      accessMode: input.accessMode,
+      agentAccessMode: input.agentAccessMode,
       favorite: input.favorite,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
       lastConnectedAt: existing?.lastConnectedAt,
@@ -75,10 +76,12 @@ export class ConnectionStore {
   private async read(): Promise<StoredConnection[]> {
     try {
       const records = JSON.parse(await readFile(this.filePath, "utf8")) as PersistedConnection[]
-      return records.map((record) => ({
-        ...record,
-        accessMode: record.accessMode === "write-only" ? "read-write" : record.accessMode,
-      }))
+      return records.map((record) => {
+        const legacyMode = record.accessMode === "write-only" ? "read-write" : record.accessMode
+        const agentAccessMode = record.agentAccessMode ?? legacyMode ?? "read-only"
+        const { accessMode: _legacyAccessMode, ...current } = record
+        return { ...current, agentAccessMode }
+      })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
       throw error

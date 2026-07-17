@@ -1,10 +1,10 @@
-export type AccessMode = "read-only" | "read-write"
+export type AgentAccessMode = "read-only" | "read-write"
 
 export interface SavedConnection {
   id: string
   name: string
   host: string
-  accessMode: AccessMode
+  agentAccessMode: AgentAccessMode
   favorite: boolean
   createdAt: string
   lastConnectedAt?: string
@@ -14,7 +14,7 @@ export interface SaveConnectionInput {
   id?: string
   name: string
   uri: string
-  accessMode: AccessMode
+  agentAccessMode: AgentAccessMode
   favorite: boolean
 }
 
@@ -32,6 +32,60 @@ export interface DatabaseInfo {
 export interface CollectionInfo {
   name: string
   type: string
+}
+
+export interface CollectionTargetInput {
+  connectionId: string
+  database: string
+  collection: string
+}
+
+export interface CollectionIndexInfo {
+  name: string
+  keys: Array<{ field: string; direction: string }>
+  unique: boolean
+  sparse: boolean
+  hidden: boolean
+  expireAfterSeconds?: number
+  partialFilterExpression?: unknown
+}
+
+export interface SchemaAnalysisInput extends CollectionTargetInput {
+  sampleSize: number
+}
+
+export interface SchemaFieldInfo {
+  path: string
+  presentCount: number
+  types: Array<{ name: string; count: number }>
+}
+
+export interface SchemaAnalysisResult {
+  fields: SchemaFieldInfo[]
+  sampleCount: number
+  durationMs: number
+}
+
+export interface AggregateInput extends CollectionTargetInput {
+  pipeline: string
+  limit: number
+}
+
+export interface AggregateResult {
+  documents: Array<{ id: string; document: unknown }>
+  durationMs: number
+}
+
+export interface CollectionReportInput extends CollectionTargetInput {
+  sampleSize: number
+}
+
+export interface CollectionReportResult {
+  documentCount: number
+  schema: SchemaAnalysisResult
+  indexes: CollectionIndexInfo[]
+  durationMs: number
+  generatedAt: string
 }
 
 export interface FindInput {
@@ -82,11 +136,11 @@ export interface CopilotPromptInput {
     connectionHost?: string
     database?: string
     collection?: string
-    accessMode?: AccessMode
+    agentAccessMode?: AgentAccessMode
     availableConnections?: Array<{
       name: string
       host: string
-      accessMode: AccessMode
+      agentAccessMode: AgentAccessMode
       favorite: boolean
     }>
   }
@@ -116,6 +170,16 @@ export interface CopilotModelsResult {
   }
 }
 
+export type UpdateStatus =
+  | { state: "disabled"; currentVersion: string }
+  | { state: "idle"; currentVersion: string }
+  | { state: "checking"; currentVersion: string }
+  | { state: "not-available"; currentVersion: string }
+  | { state: "available"; currentVersion: string; version: string }
+  | { state: "downloading"; currentVersion: string; version: string; percent: number }
+  | { state: "downloaded"; currentVersion: string; version: string }
+  | { state: "error"; currentVersion: string; message: string }
+
 export interface MongoPilotApi {
   connections: {
     list(): Promise<SavedConnection[]>
@@ -128,6 +192,10 @@ export interface MongoPilotApi {
   database: {
     listCollections(connectionId: string, database: string): Promise<CollectionInfo[]>
     find(input: FindInput): Promise<FindResult>
+    aggregate(input: AggregateInput): Promise<AggregateResult>
+    listIndexes(input: CollectionTargetInput): Promise<CollectionIndexInfo[]>
+    analyzeSchema(input: SchemaAnalysisInput): Promise<SchemaAnalysisResult>
+    generateReport(input: CollectionReportInput): Promise<CollectionReportResult>
     replaceDocument(input: ReplaceDocumentInput): Promise<void>
     deleteDocument(input: DocumentTargetInput): Promise<void>
   }
@@ -137,5 +205,12 @@ export interface MongoPilotApi {
     stop(): Promise<CopilotStatus>
     models(): Promise<CopilotModelsResult>
     prompt(input: CopilotPromptInput): Promise<CopilotReply>
+  }
+  updates: {
+    status(): Promise<UpdateStatus>
+    check(): Promise<UpdateStatus>
+    download(): Promise<UpdateStatus>
+    install(): Promise<void>
+    onStatus(listener: (status: UpdateStatus) => void): () => void
   }
 }

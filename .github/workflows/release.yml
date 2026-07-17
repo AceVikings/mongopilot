@@ -22,17 +22,27 @@ jobs:
           - name: macOS
             os: macos-latest
             command: dist:mac
-            asset: dist/*.dmg
+            asset: |
+              dist/*.dmg
+              dist/*.zip
+              dist/*.blockmap
+              dist/latest-mac.yml
             artifact: mongo-pilot-macos
           - name: Windows
             os: windows-latest
             command: dist:windows
-            asset: dist/*.exe
+            asset: |
+              dist/*.exe
+              dist/*.blockmap
+              dist/latest.yml
             artifact: mongo-pilot-windows
           - name: Linux
             os: ubuntu-latest
             command: dist:linux
-            asset: dist/*.AppImage
+            asset: |
+              dist/*.AppImage
+              dist/*.blockmap
+              dist/latest-linux.yml
             artifact: mongo-pilot-linux
 
     runs-on: ${{ matrix.os }}
@@ -50,6 +60,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Set release version
+        shell: bash
+        run: |
+          BASE_VERSION=$(node -p "require('./package.json').version")
+          VERSION="${BASE_VERSION%.*}.${GITHUB_RUN_NUMBER}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Package application
         run: npm run ${{ matrix.command }}
@@ -90,9 +107,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          BASE_VERSION=$(node -p "require('./package.json').version")
+          VERSION="${BASE_VERSION%.*}.${GITHUB_RUN_NUMBER}"
           SHORT_SHA=${GITHUB_SHA::7}
-          TAG="v${VERSION}-build.${GITHUB_RUN_NUMBER}"
+          TAG="v${VERSION}"
           TITLE="Mongo Pilot v${VERSION} (${SHORT_SHA})"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

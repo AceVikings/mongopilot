@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import { Decimal128, Int32, Long, ObjectId } from "mongodb"
+import { serializeBson } from "../src/main/bson-serialization"
 import { getBsonDisplay } from "../src/renderer/src/bson-format"
 
 const cases: Array<[unknown, string]> = [
@@ -20,4 +22,21 @@ const cases: Array<[unknown, string]> = [
 for (const [input, expected] of cases) assert.equal(getBsonDisplay(input)?.text, expected)
 assert.equal(getBsonDisplay({ $oid: "value", other: true }), null)
 
-console.log(`BSON display formatting verified for ${cases.length} canonical types.`)
+const objectId = "507f1f77bcf86cd799439011"
+const serializedDocument = serializeBson({
+  _id: new ObjectId(objectId),
+  createdAt: new Date("2021-01-01T00:00:00.000Z"),
+  count: new Int32(42),
+  large: Long.fromString("9007199254740993"),
+  price: Decimal128.fromString("12.34"),
+})
+assert.deepEqual(serializedDocument, {
+  _id: { $oid: objectId },
+  createdAt: { $date: { $numberLong: "1609459200000" } },
+  count: { $numberInt: "42" },
+  large: { $numberLong: "9007199254740993" },
+  price: { $numberDecimal: "12.34" },
+})
+assert.doesNotMatch(JSON.stringify(serializedDocument), /"buffer"/)
+
+console.log(`BSON display formatting and driver serialization verified for ${cases.length} canonical types.`)

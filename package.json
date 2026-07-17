@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "A MongoDB desktop workspace with an OpenCode copilot.",
+  "author": "Vikings Studio",
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
@@ -11,11 +12,13 @@
     "lint": "biome lint . --error-on-warnings",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:bson": "tsx scripts/bson-format-smoke.ts",
+    "test:aggregation": "tsx scripts/aggregation-pipeline-smoke.ts",
     "test:mcp": "tsx scripts/mcp-smoke.ts",
+    "test:schema": "tsx scripts/schema-analysis-smoke.ts",
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder",
     "dist:linux": "npm run build && electron-builder --linux AppImage --x64 --publish never",
-    "dist:mac": "npm run build && electron-builder --mac dmg --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --publish never",
     "dist:windows": "npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
@@ -24,6 +27,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opencode-ai/sdk": "1.18.2",
     "@phosphor-icons/react": "2.1.10",
+    "electron-updater": "^6.8.9",
     "express": "^5.1.0",
     "mongodb": "7.5.0",
     "opencode-ai": "1.18.2",
@@ -53,6 +57,7 @@
   "build": {
     "appId": "com.mongopilot.desktop",
     "productName": "Mongo Pilot",
+    "artifactName": "Mongo-Pilot-${version}-${os}-${arch}.${ext}",
     "icon": "resources/icon.png",
     "files": [
       "out/**/*",
@@ -61,9 +66,20 @@
     "asarUnpack": [
       "node_modules/opencode-ai/**/*"
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Vikings-Studio",
+        "repo": "mongopilot",
+        "releaseType": "release"
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "extraResources": [
         {
           "from": "node_modules/opencode-ai/bin/opencode.exe",
