@@ -18,7 +18,6 @@ const applicationWebsite = "https://github.com/Vikings-Studio/mongopilot"
 const minimumWindowSize = { width: 1100, height: 720 }
 const userDataPath = join(app.getPath("appData"), "mongo-pilot")
 
-app.setName(applicationName)
 app.setPath("userData", userDataPath)
 process.title = applicationName
 

@@ -54,7 +54,11 @@ export class ConnectionStore {
     const record = (await this.read()).find((item) => item.id === id)
     if (!record) throw new Error("Saved connection not found.")
     if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure credential storage is unavailable.")
-    return safeStorage.decryptString(Buffer.from(record.encryptedUri, "base64"))
+    try {
+      return safeStorage.decryptString(Buffer.from(record.encryptedUri, "base64"))
+    } catch {
+      throw new Error("Mongo Pilot could not decrypt this saved connection. Unlock your login keychain and try again, or remove and add the connection again.")
+    }
   }
 
   async markConnected(id: string): Promise<SavedConnection> {

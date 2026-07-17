@@ -97,6 +97,7 @@ function readPanelWidth(key: "left" | "right"): number {
 
 function PanelResizeHandle({
   label,
+  position,
   value,
   min,
   max,
@@ -104,6 +105,7 @@ function PanelResizeHandle({
   onResize,
 }: {
   label: string
+  position: number | string
   value: number
   min: number
   max: number
@@ -111,10 +113,12 @@ function PanelResizeHandle({
   onResize: (value: number) => void
 }) {
   const drag = useRef<{ pointerId: number; startX: number; startValue: number } | null>(null)
+  const [dragging, setDragging] = useState(false)
 
   function finishDrag(event: React.PointerEvent<HTMLHRElement>): void {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
     drag.current = null
+    setDragging(false)
     document.body.style.cursor = ""
     document.body.style.userSelect = ""
   }
@@ -127,8 +131,11 @@ function PanelResizeHandle({
       aria-valuemax={max}
       aria-valuenow={Math.round(value)}
       tabIndex={0}
+      style={{ left: position }}
       onPointerDown={(event) => {
+        event.preventDefault()
         drag.current = { pointerId: event.pointerId, startX: event.clientX, startValue: value }
+        setDragging(true)
         event.currentTarget.setPointerCapture(event.pointerId)
         document.body.style.cursor = "col-resize"
         document.body.style.userSelect = "none"
@@ -139,13 +146,19 @@ function PanelResizeHandle({
       }}
       onPointerUp={finishDrag}
       onPointerCancel={finishDrag}
+      onLostPointerCapture={() => {
+        drag.current = null
+        setDragging(false)
+        document.body.style.cursor = ""
+        document.body.style.userSelect = ""
+      }}
       onKeyDown={(event) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
         event.preventDefault()
         const boundaryDelta = event.key === "ArrowRight" ? 12 : -12
         onResize(clamp(value + boundaryDelta * direction, min, max))
       }}
-      className="group absolute inset-y-0 z-30 m-0 w-2 -translate-x-1/2 cursor-col-resize touch-none border-0 after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-line after:transition-[width,background-color] after:duration-150 hover:after:w-0.5 hover:after:bg-accent focus-visible:outline-none focus-visible:after:w-0.5 focus-visible:after:bg-accent"
+      className={`group absolute inset-y-0 z-40 m-0 w-3 -translate-x-1/2 cursor-col-resize touch-none border-0 focus-visible:outline-none before:absolute before:left-1/2 before:top-1/2 before:z-10 before:h-10 before:w-1 before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:border before:border-line-strong before:bg-raised before:opacity-45 before:transition-[border-color,background-color,opacity] before:duration-150 after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-line after:transition-[width,background-color] after:duration-150 hover:before:border-accent hover:before:bg-accent-soft hover:before:opacity-100 hover:after:w-0.5 hover:after:bg-accent focus-visible:before:border-accent focus-visible:before:bg-accent-soft focus-visible:before:opacity-100 focus-visible:after:w-0.5 focus-visible:after:bg-accent ${dragging ? "before:border-accent before:bg-accent-soft before:opacity-100 after:w-0.5 after:bg-accent" : ""}`}
     />
   )
 }
@@ -946,6 +959,7 @@ export default function App() {
   const [mutatingDocumentId, setMutatingDocumentId] = useState<string | null>(null)
   const [pendingDeleteDocumentId, setPendingDeleteDocumentId] = useState<string | null>(null)
   const [connectionMenuId, setConnectionMenuId] = useState<string | null>(null)
+  const [connectingConnectionId, setConnectingConnectionId] = useState<string | null>(null)
   const [disconnectingConnection, setDisconnectingConnection] = useState(false)
   const [pendingRemoveConnection, setPendingRemoveConnection] = useState<SavedConnection | null>(null)
   const [removingConnectionId, setRemovingConnectionId] = useState<string | null>(null)
@@ -1142,7 +1156,9 @@ export default function App() {
   }
 
   async function connect(connection: SavedConnection) {
+    if (connectingConnectionId) return
     setConnectionMenuId(null)
+    setConnectingConnectionId(connection.id)
     setError("")
     try {
       if (!window.mongoPilot) throw new Error("Connections are available in the Mongo Pilot desktop app.")
@@ -1164,6 +1180,8 @@ export default function App() {
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Connection failed.")
+    } finally {
+      setConnectingConnectionId(null)
     }
   }
 
@@ -1546,9 +1564,9 @@ export default function App() {
                 }}
               >
                 <legend className="sr-only">{connection.name} connection</legend>
-                <button type="button" onClick={() => void connect(connection)} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 py-1 pl-3 pr-11 text-left text-xs transition-[background-color,border-color] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
+                <button type="button" disabled={connectingConnectionId !== null} aria-busy={connectingConnectionId === connection.id} onClick={() => void connect(connection)} className={`flex min-h-11 w-full items-center gap-2.5 border-l-2 py-1 pl-3 pr-11 text-left text-xs transition-[background-color,border-color,opacity] duration-150 ease-product focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent focus-visible:outline-none disabled:cursor-wait disabled:opacity-60 ${activeConnection?.id === connection.id ? "border-accent bg-accent-soft" : "border-transparent hover:bg-panel"}`}>
                   <HardDrives size={17} className="shrink-0 text-muted" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium">{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connection.host}</span></span>
+                  <span className="min-w-0 flex-1 max-md:hidden"><span className="flex items-center gap-1.5 truncate font-medium">{connection.favorite && <Star size={11} weight="fill" className="text-warning" aria-label="Favorite" />}{connection.name}</span><span className={`block truncate font-mono text-[10px] ${activeConnection?.id === connection.id ? "text-muted" : "text-faint"}`}>{connectingConnectionId === connection.id ? "Connecting..." : connection.host}</span></span>
                 </button>
                 <button
                   type="button"
@@ -1618,6 +1636,7 @@ export default function App() {
                 <Database size={30} weight="duotone" className="mx-auto mb-4 text-accent" aria-hidden="true" />
                 <h1 className="text-lg font-semibold tracking-tight">Connect to MongoDB</h1>
                 <p className="mt-2 text-xs leading-5 text-muted">{connections.length ? "Select a saved connection from the sidebar, or add another deployment." : "Add a MongoDB connection string to browse databases, collections, and documents."}</p>
+                {error && <div role="alert" className="mt-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-left text-xs leading-5 text-danger">{error}</div>}
                 <button type="button" onClick={() => setShowConnectionDialog(true)} className="mt-5 inline-flex h-10 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas focus-visible:outline-none"><Plus size={14} aria-hidden="true" />New connection</button>
               </div>
             </div>
@@ -1777,26 +1796,24 @@ export default function App() {
           canWrite={activeConnection?.agentAccessMode === "read-write"}
           onModeChange={setAgentMode}
         />
-        <div style={{ left: panelWidths.left }} className="absolute inset-y-0 z-30">
-          <PanelResizeHandle
-            label="Resize connections panel"
-            value={panelWidths.left}
-            min={panelLimits.left.min}
-            max={leftPanelMax}
-            direction={1}
-            onResize={(value) => setPanelWidths((current) => ({ ...current, left: value }))}
-          />
-        </div>
-        <div style={{ left: `calc(100% - ${panelWidths.right}px)` }} className="absolute inset-y-0 z-30">
-          <PanelResizeHandle
-            label="Resize copilot panel"
-            value={panelWidths.right}
-            min={panelLimits.right.min}
-            max={rightPanelMax}
-            direction={-1}
-            onResize={(value) => setPanelWidths((current) => ({ ...current, right: value }))}
-          />
-        </div>
+        <PanelResizeHandle
+          label="Resize connections panel"
+          position={panelWidths.left}
+          value={panelWidths.left}
+          min={panelLimits.left.min}
+          max={leftPanelMax}
+          direction={1}
+          onResize={(value) => setPanelWidths((current) => ({ ...current, left: value }))}
+        />
+        <PanelResizeHandle
+          label="Resize copilot panel"
+          position={`calc(100% - ${panelWidths.right}px)`}
+          value={panelWidths.right}
+          min={panelLimits.right.min}
+          max={rightPanelMax}
+          direction={-1}
+          onResize={(value) => setPanelWidths((current) => ({ ...current, right: value }))}
+        />
       </div>
       {showConnectionDialog && <ConnectionDialog
         onClose={() => setShowConnectionDialog(false)}
