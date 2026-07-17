@@ -46,10 +46,12 @@ import type {
   SchemaAnalysisResult,
   UpdateStatus,
   VisualizationResult,
+  VisualizationSpec,
 } from "../../shared/types"
 import { getBsonDisplay, type BsonDisplayKind } from "./bson-format"
 import { CustomSelect } from "./CustomSelect"
 import { VisualizationPanel } from "./VisualizationPanel"
+import { readSavedVisualization, saveVisualization } from "./visualization-storage"
 
 type Message = { id: string; role: "assistant" | "user"; text: string }
 type CollectionPreferences = { sort: string; pageSize: number }
@@ -950,6 +952,7 @@ export default function App() {
   const [reportLoading, setReportLoading] = useState(false)
   const [reportError, setReportError] = useState("")
   const [visualizationPrompt, setVisualizationPrompt] = useState("")
+  const [visualizationSpec, setVisualizationSpec] = useState<VisualizationSpec | null>(null)
   const [visualizationResult, setVisualizationResult] = useState<VisualizationResult | null>(null)
   const [visualizationLoading, setVisualizationLoading] = useState(false)
   const [visualizationError, setVisualizationError] = useState("")
@@ -1101,6 +1104,7 @@ export default function App() {
     setReportLoading(false)
     setReportError("")
     setVisualizationPrompt("")
+    setVisualizationSpec(null)
     setVisualizationResult(null)
     setVisualizationLoading(false)
     setVisualizationError("")
@@ -1211,6 +1215,7 @@ export default function App() {
         setReportLoading(false)
         setReportError("")
         setVisualizationPrompt("")
+        setVisualizationSpec(null)
         setVisualizationResult(null)
         setVisualizationLoading(false)
         setVisualizationError("")
@@ -1227,6 +1232,7 @@ export default function App() {
   }
 
   async function selectCollection(connectionId: string, database: string, collection: string) {
+    const savedVisualization = readSavedVisualization(localStorage, { connectionId, database, collection })
     collectionTargetRef.current = `${connectionId}:${database}:${collection}`
     const preferences = readCollectionPreferences(connectionId, database, collection)
     setSelectedDatabase(database)
@@ -1252,7 +1258,8 @@ export default function App() {
     setReport(null)
     setReportLoading(false)
     setReportError("")
-    setVisualizationPrompt("")
+    setVisualizationPrompt(savedVisualization?.prompt ?? "")
+    setVisualizationSpec(savedVisualization?.spec ?? null)
     setVisualizationResult(null)
     setVisualizationLoading(false)
     setVisualizationError("")
@@ -1397,7 +1404,15 @@ export default function App() {
         prompt: visualizationPrompt.trim(),
         model: readPreferredModel(),
       })
-      if (collectionTargetRef.current === target) setVisualizationResult(result)
+      if (collectionTargetRef.current === target) {
+        setVisualizationSpec(result.spec)
+        setVisualizationResult(result)
+        saveVisualization(localStorage, {
+          connectionId: activeConnection.id,
+          database: selectedDatabase,
+          collection: selectedCollection,
+        }, { prompt: visualizationPrompt.trim(), spec: result.spec })
+      }
     } catch (reason) {
       if (collectionTargetRef.current === target) setVisualizationError(desktopOperationError(reason, "Could not create this visualization."))
     } finally {
@@ -1405,8 +1420,8 @@ export default function App() {
     }
   }
 
-  async function refreshVisualization(): Promise<void> {
-    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot || !visualizationResult) return
+  async function refreshVisualization(spec = visualizationSpec): Promise<void> {
+    if (!activeConnection || !selectedDatabase || !selectedCollection || !window.mongoPilot || !spec) return
     const target = `${activeConnection.id}:${selectedDatabase}:${selectedCollection}`
     setVisualizationLoading(true)
     setVisualizationError("")
@@ -1415,7 +1430,7 @@ export default function App() {
         connectionId: activeConnection.id,
         database: selectedDatabase,
         collection: selectedCollection,
-        spec: visualizationResult.spec,
+        spec,
       })
       if (collectionTargetRef.current === target) setVisualizationResult(result)
     } catch (reason) {
@@ -1430,6 +1445,7 @@ export default function App() {
     if (tab === "Schema" && !schemaAnalysis && !schemaLoading) void loadSchema()
     if (tab === "Indexes" && !indexesLoaded && !indexesLoading) void loadIndexes()
     if (tab === "Reports" && !report && !reportLoading) void generateReport()
+    if (tab === "Visualizations" && visualizationSpec && !visualizationResult && !visualizationLoading) void refreshVisualization(visualizationSpec)
   }
 
   async function copyDocument(id: string, document: string): Promise<void> {
@@ -1781,6 +1797,7 @@ export default function App() {
                   result={visualizationResult}
                   loading={visualizationLoading}
                   error={visualizationError}
+                  canRefresh={visualizationSpec !== null}
                   onPromptChange={setVisualizationPrompt}
                   onGenerate={() => void generateVisualization()}
                   onRefresh={() => void refreshVisualization()}
