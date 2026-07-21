@@ -25,6 +25,9 @@ function isConnectionAccessMode(value: unknown): value is ConnectionAccessMode {
 }
 
 export class ConnectionStore {
+  private readonly uriCache = new Map<string, string>()
+  private readonly uriVersions = new Map<string, number>()
+
   constructor(private readonly filePath: string) {}
 
   async list(): Promise<SavedConnection[]> {
@@ -57,6 +60,8 @@ export class ConnectionStore {
       ? records.map((item) => (item.id === existing.id ? record : item))
       : [...records, record]
     await this.write(next)
+    this.uriVersions.set(record.id, (this.uriVersions.get(record.id) ?? 0) + 1)
+    this.uriCache.set(record.id, input.uri)
     const { encryptedUri: _encryptedUri, ...saved } = record
     return saved
   }
@@ -77,14 +82,25 @@ export class ConnectionStore {
 
   async remove(id: string): Promise<void> {
     await this.write((await this.read()).filter((item) => item.id !== id))
+    this.uriVersions.set(id, (this.uriVersions.get(id) ?? 0) + 1)
+    this.uriCache.delete(id)
   }
 
   async getUri(id: string): Promise<string> {
-    const record = (await this.read()).find((item) => item.id === id)
+    const cached = this.uriCache.get(id)
+    if (cached !== undefined) return cached
+    const uriVersion = this.uriVersions.get(id) ?? 0
+    const records = await this.read()
+    const cachedAfterRead = this.uriCache.get(id)
+    if (cachedAfterRead !== undefined) return cachedAfterRead
+    if ((this.uriVersions.get(id) ?? 0) !== uriVersion) return this.getUri(id)
+    const record = records.find((item) => item.id === id)
     if (!record) throw new Error("Saved connection not found.")
     if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure credential storage is unavailable.")
     try {
-      return safeStorage.decryptString(Buffer.from(record.encryptedUri, "base64"))
+      const uri = safeStorage.decryptString(Buffer.from(record.encryptedUri, "base64"))
+      this.uriCache.set(id, uri)
+      return uri
     } catch {
       throw new Error("Mongo Pilot could not decrypt this saved connection. Unlock your login keychain and try again, or remove and add the connection again.")
     }

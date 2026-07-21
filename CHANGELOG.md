@@ -4,6 +4,12 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-21
+
+### Fixed
+
+- Cache decrypted connection URIs only for the current app session so reconnecting, copying a URI, or opening the shell does not repeatedly ask for the same macOS Keychain permission.
+
 ## [0.2.3] - 2026-07-21
 
 ### Fixed

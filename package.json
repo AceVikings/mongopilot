@@ -1,6 +1,6 @@
 {
   "name": "mongo-pilot",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "A MongoDB desktop workspace with an OpenCode copilot.",
   "author": "Vikings Studio",
