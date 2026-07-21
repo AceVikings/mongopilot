@@ -4,6 +4,14 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-21
+
+### Fixed
+
+- Recover from a stopped or unreachable bundled OpenCode server instead of leaving Pilot prompts permanently stuck on `fetch failed`.
+- Invalidate dead OpenCode sessions when the child process exits and restart the service on the next request.
+- Serialize OpenCode and MongoDB MCP lifecycle changes so concurrent prompts, restarts, and shutdowns cannot overlap grants or child processes.
+
 ## [0.2.2] - 2026-07-21
 
 ### Added

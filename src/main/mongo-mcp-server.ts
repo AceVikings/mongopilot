@@ -33,11 +33,19 @@ export class MongoMcpServer {
   private listener?: Server
   private grant?: AgentGrant
   private url?: string
+  private lifecycle: Promise<void> = Promise.resolve()
 
   constructor(private readonly mongo: MongoAgentService) {}
 
-  async start(): Promise<{ url: string; token: string }> {
-    if (this.url) return { url: this.url, token: this.token }
+  start(): Promise<{ url: string; token: string }> {
+    const operation = this.lifecycle.then(() => this.url
+      ? { url: this.url, token: this.token }
+      : this.startListener())
+    this.lifecycle = operation.then(() => undefined, () => undefined)
+    return operation
+  }
+
+  private async startListener(): Promise<{ url: string; token: string }> {
     const app = createMcpExpressApp({ host: "127.0.0.1" })
     app.use(express.json({ limit: "1mb" }))
     app.post("/mcp", async (request, response) => {
@@ -81,7 +89,13 @@ export class MongoMcpServer {
     this.mongo.cancelAgentWriteApproval()
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    const operation = this.lifecycle.then(() => this.stopListener())
+    this.lifecycle = operation.then(() => undefined, () => undefined)
+    return operation
+  }
+
+  private async stopListener(): Promise<void> {
     this.clearGrant()
     const listener = this.listener
     if (listener) await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()))
