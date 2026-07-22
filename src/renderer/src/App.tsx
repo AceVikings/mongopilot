@@ -1015,6 +1015,7 @@ export default function App() {
   const [mutatingDocumentId, setMutatingDocumentId] = useState<string | null>(null)
   const [writeApproval, setWriteApproval] = useState<WriteApprovalRequest | null>(null)
   const [resolvingWriteApprovalId, setResolvingWriteApprovalId] = useState<string | null>(null)
+  const [writeApprovalNotice, setWriteApprovalNotice] = useState("")
   const [dateDisplayMode, setDateDisplayMode] = useState<DateDisplayMode>(() => localStorage.getItem("mongo-pilot:date-display") === "local" ? "local" : "database")
   const [connectionMenuId, setConnectionMenuId] = useState<string | null>(null)
   const [connectingConnectionId, setConnectingConnectionId] = useState<string | null>(null)
@@ -1029,6 +1030,7 @@ export default function App() {
   const removeCancelRef = useRef<HTMLButtonElement>(null)
   const collectionTargetRef = useRef("")
   const resolvingWriteApprovalRef = useRef<string | null>(null)
+  const writeApprovalRequestIdRef = useRef<string | null>(null)
 
   const leftPanelMax = Math.max(
     panelLimits.left.min,
@@ -1060,12 +1062,18 @@ export default function App() {
   useEffect(() => {
     if (!window.mongoPilot) return
     const unsubscribeRequest = window.mongoPilot.writeApprovals.onRequest((request) => {
+      writeApprovalRequestIdRef.current = request.id
       resolvingWriteApprovalRef.current = null
       setResolvingWriteApprovalId(null)
+      setWriteApprovalNotice("")
       setWriteApproval(request)
     })
     const unsubscribeCancelled = window.mongoPilot.writeApprovals.onCancelled((id) => {
       setWriteApproval((current) => current?.id === id ? null : current)
+      if (writeApprovalRequestIdRef.current === id) {
+        writeApprovalRequestIdRef.current = null
+        setWriteApprovalNotice("The write request expired or was cancelled. Nothing was approved. Retry the request if it is still needed.")
+      }
       if (resolvingWriteApprovalRef.current === id) resolvingWriteApprovalRef.current = null
       setResolvingWriteApprovalId((current) => current === id ? null : current)
     })
@@ -1607,10 +1615,14 @@ export default function App() {
     setResolvingWriteApprovalId(requestId)
     try {
       const accepted = await window.mongoPilot.writeApprovals.resolve({ id: requestId, approved })
-      if (!accepted) setError("This write approval expired or was cancelled before Mongo Pilot received it. Retry the request.")
+      if (!accepted) setWriteApprovalNotice("This write approval expired or was cancelled before Mongo Pilot received it. Nothing was approved; retry only if the write is still needed.")
+      if (writeApprovalRequestIdRef.current === requestId) writeApprovalRequestIdRef.current = null
       setWriteApproval((current) => current?.id === requestId ? null : current)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Mongo Pilot could not confirm this write approval.")
+      const detail = reason instanceof Error ? reason.message : "Mongo Pilot could not confirm this write approval."
+      setWriteApprovalNotice(`Approval acknowledgement failed and its status is unknown. Verify the target data before retrying. ${detail}`)
+      if (writeApprovalRequestIdRef.current === requestId) writeApprovalRequestIdRef.current = null
+      setWriteApproval((current) => current?.id === requestId ? null : current)
     } finally {
       if (resolvingWriteApprovalRef.current === requestId) resolvingWriteApprovalRef.current = null
       setResolvingWriteApprovalId((current) => current === requestId ? null : current)
@@ -1783,6 +1795,7 @@ export default function App() {
                   <button key={tab} type="button" disabled={tab === "Shell" ? !selectedDatabase : !selectedCollection} onClick={() => selectCollectionTab(tab)} className={`h-11 shrink-0 border-b-2 text-xs font-medium transition-[border-color,color] duration-150 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${activeCollectionTab === tab ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"}`}>{tab}</button>
                 ))}
               </nav>
+              {writeApprovalNotice && <div role="alert" className="flex items-center justify-between border-b border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"><span>{writeApprovalNotice}</span><button type="button" onClick={() => setWriteApprovalNotice("")} className="min-h-10 rounded px-3 font-medium focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none">Dismiss</button></div>}
               {activeCollectionTab === "Documents" ? <>
               <div className="border-b border-line bg-shell p-3">
                 <div className="grid grid-cols-[minmax(0,2fr)_minmax(140px,1fr)_auto] items-start gap-2">

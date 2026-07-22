@@ -1,6 +1,6 @@
 import { ArrowClockwise, Broom, PaperPlaneTilt, Stop, TerminalWindow } from "@phosphor-icons/react"
 import { useEffect, useRef, useState } from "react"
-import type { ConnectionAccessMode } from "../../shared/types"
+import { shellExecutionTimeoutMarker, type ConnectionAccessMode } from "../../shared/types"
 
 type ShellEntry = { id: string; kind: "input" | "output" | "error"; text: string; prompt?: string }
 type ShellPhase = "blocked" | "starting" | "ready" | "error"
@@ -93,9 +93,12 @@ export function ShellPanel({ connectionId, database, accessMode }: { connectionI
         ...result.output.filter(Boolean).map((text) => createEntry("output", text)),
       ]))
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "The shell command failed."
+      const rawMessage = reason instanceof Error ? reason.message : "The shell command failed."
+      const shellTimedOut = rawMessage.includes(shellExecutionTimeoutMarker)
+      const message = rawMessage.replace(shellExecutionTimeoutMarker, "")
       setEntries((current) => boundEntries([...current, createEntry("error", message)]))
       setError(message)
+      if (shellTimedOut) setPhase("error")
     } finally {
       setRunning(false)
       window.requestAnimationFrame(() => inputRef.current?.focus())

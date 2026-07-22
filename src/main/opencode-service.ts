@@ -6,6 +6,7 @@ import { createOpencodeClient, type Config, type OpencodeClient } from "@opencod
 import type { CopilotModelsResult, CopilotPromptInput, CopilotReply, CopilotStatus, VisualizationGenerateInput, VisualizationSpec } from "../shared/types"
 import type { MongoMcpServer } from "./mongo-mcp-server"
 import { parseVisualizationReply } from "./visualization-spec"
+import { writeMcpTimeoutMs } from "./write-timeouts"
 
 const mongoReadTools = ["mongo_list_databases", "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_count"] as const
 const mongoWriteTools = ["mongo_insert_one", "mongo_update_one", "mongo_delete_one"] as const
@@ -114,7 +115,7 @@ export class OpencodeService {
               headers: { Authorization: `Bearer ${mongoMcp.token}` },
               oauth: false,
               enabled: true,
-              timeout: 180_000,
+              timeout: writeMcpTimeoutMs,
             },
           },
       }, lifecycleVersion)

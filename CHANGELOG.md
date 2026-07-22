@@ -4,6 +4,15 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-07-22
+
+### Fixed
+
+- Stop approved shell commands that exceed 30 seconds and require verification before retrying an outcome-ambiguous write.
+- Preserve definitive MongoDB errors while reserving unknown-outcome warnings for network, operation-timeout, and write-concern failures.
+- Keep approval errors visible across workspace tabs and contain keyboard focus inside the approval dialog.
+- Centralize approval, write, and MCP timeout budgets and bound agent metadata reads.
+
 ## [0.2.5] - 2026-07-22
 
 ### Fixed

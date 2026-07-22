@@ -1,7 +1,11 @@
 import assert from "node:assert/strict"
+import { MongoOperationTimeoutError, MongoServerError, MongoWriteConcernError } from "mongodb"
 import type { WriteApprovalRequest } from "../src/shared/types"
 import { WriteApprovalBroker, type WriteApprovalInput, writeApprovalPreview } from "../src/main/write-approval-broker"
 import { MongoService } from "../src/main/mongo-service"
+import { writeApprovalTimeoutMs, writeMcpTimeoutMs, writeOperationTimeoutMs } from "../src/main/write-timeouts"
+
+assert.ok(writeMcpTimeoutMs > writeApprovalTimeoutMs + writeOperationTimeoutMs)
 
 const input: WriteApprovalInput = {
   connectionId: "connection-1",
@@ -63,7 +67,7 @@ const fakeClient = {
     collection: () => ({
       insertOne: async (_document: unknown, options: unknown) => {
         receivedWriteOptions = options
-        throw new Error("operation timed out")
+        throw new MongoOperationTimeoutError("operation timed out")
       },
     }),
   }),
@@ -78,5 +82,48 @@ await assert.rejects(
   /outcome may be unknown; verify the target data before retrying.*operation timed out/,
 )
 assert.deepEqual(receivedWriteOptions, { timeoutMS: 30_000 })
+
+const deterministicMongoService = new MongoService({} as never, { request: async () => undefined } as never)
+const duplicateKey = new MongoServerError({ message: "duplicate key", code: 11_000 })
+const deterministicActive = Reflect.get(deterministicMongoService, "active") as Map<string, unknown>
+deterministicActive.set("connection-1", {
+  client: { db: () => ({ collection: () => ({ insertOne: async () => { throw duplicateKey } }) }) },
+  connection: { id: "connection-1", connectionAccessMode: "read-write", agentAccessMode: "read-write" },
+})
+await assert.rejects(
+  deterministicMongoService.agentInsertOne("connection-1", "db", "items", { value: 1 }, "scope"),
+  (error) => error === duplicateKey,
+)
+
+const writeConcernError = new MongoWriteConcernError({
+  ok: 1,
+  writeConcernError: { code: 64, errmsg: "waiting for replication timed out" },
+})
+const runApprovedWrite = Reflect.get(mongoService, "runApprovedWrite") as (operation: () => Promise<unknown>) => Promise<unknown>
+await assert.rejects(
+  runApprovedWrite.call(mongoService, async () => { throw writeConcernError }),
+  /outcome may be unknown; verify the target data before retrying.*waiting for replication timed out/,
+)
+
+const shellMongoService = new MongoService({} as never, { request: async () => undefined } as never)
+let shellInterrupted = false
+let shellTerminated = false
+const shellSession = {
+  runtime: {
+    evaluate: () => new Promise<never>(() => undefined),
+    interrupt: () => {
+      shellInterrupted = true
+      return new Promise<boolean>(() => undefined)
+    },
+    terminate: async () => { shellTerminated = true },
+  },
+}
+const shells = Reflect.get(shellMongoService, "shells") as Map<string, unknown>
+shells.set("connection-1", shellSession)
+const runShellCommand = Reflect.get(shellMongoService, "runShellCommand") as (connectionId: string, session: unknown, code: string, timeoutMs: number) => Promise<unknown>
+await assert.rejects(runShellCommand.call(shellMongoService, "connection-1", shellSession, "while (true) {}", 5), /shell command exceeded 30 seconds/)
+assert.equal(shellInterrupted, true)
+assert.equal(shellTerminated, true)
+assert.equal(shells.has("connection-1"), false)
 
 console.log("Write approval resume, denial, expiry, preview, cancellation, and concurrency behavior verified.")

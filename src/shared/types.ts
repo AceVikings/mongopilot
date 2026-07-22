@@ -205,6 +205,8 @@ export interface WriteApprovalResponse {
   approved: boolean
 }
 
+export const shellExecutionTimeoutMarker = "[SHELL_EXECUTION_TIMEOUT] "
+
 export type CopilotStatus =
   | { state: "stopped" }
   | { state: "starting" }

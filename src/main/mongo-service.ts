@@ -1,6 +1,7 @@
 import { createRequire } from "node:module"
 import { inspect, stripVTControlCharacters } from "node:util"
-import { MongoClient, type Document, type Filter, type Sort, type UpdateFilter } from "mongodb"
+import { MongoClient, MongoNetworkError, MongoOperationTimeoutError, MongoWriteConcernError, type Document, type Filter, type Sort, type UpdateFilter } from "mongodb"
+import { shellExecutionTimeoutMarker } from "../shared/types"
 import type { AgentAccessMode, AggregateInput, AggregateResult, CollectionIndexInfo, CollectionInfo, CollectionReportInput, CollectionReportResult, CollectionTargetInput, DatabaseInfo, DocumentTargetInput, FindInput, FindResult, ReplaceDocumentInput, SavedConnection, SchemaAnalysisInput, SchemaAnalysisResult, ShellCompletionInput, ShellEvaluateInput, ShellResult, ShellStartInput, UpdateConnectionSettingsInput, VisualizationResult, VisualizationSpec } from "../shared/types"
 import { parseAggregationPipeline } from "./aggregation-pipeline"
 import { parseExtendedJson, serializeBson, serializeBsonArray, stringifyCanonicalExtendedJson, stringifyMongoDocument } from "./bson-serialization"
@@ -11,6 +12,7 @@ import { parseVisualizationSpec } from "./visualization-spec"
 import { normalizeVisualizationValue } from "./visualization-values"
 import { writeApprovalPreview } from "./write-approval-broker"
 import type { WriteApprovalService } from "./write-approval-service"
+import { writeOperationTimeoutMs } from "./write-timeouts"
 
 interface ActiveConnection {
   client: MongoClient
@@ -69,6 +71,7 @@ function getMongoshRuntimeConstructor(): MongoshRuntimeConstructor {
 export class MongoService {
   private readonly active = new Map<string, ActiveConnection>()
   private readonly shells = new Map<string, ShellSession>()
+  private readonly blockedShells = new Set<string>()
 
   constructor(
     private readonly store: ConnectionStore,
@@ -117,6 +120,9 @@ export class MongoService {
 
   async startShell(input: ShellStartInput): Promise<{ prompt: string }> {
     this.requireWrite(input.connectionId)
+    if (this.blockedShells.has(input.connectionId)) {
+      throw new Error("The previous shell runtime did not stop cleanly. Restart Mongo Pilot before running another shell command on this connection.")
+    }
     let session = this.shells.get(input.connectionId)
     if (!session) {
       const WorkerRuntime = getMongoshRuntimeConstructor()
@@ -168,7 +174,7 @@ export class MongoService {
     session.printedLength = 0
     session.outputTruncated = false
     session.clearRequested = false
-    const result = await session.runtime.evaluate(input.code)
+    const result = await this.runShellCommand(input.connectionId, session, input.code)
     const output = [...session.printed]
     if (session.outputTruncated) output.push("[Output truncated at 512 KB]")
     if (result.printable !== undefined) output.push(this.formatShellValue(result.printable))
@@ -194,12 +200,14 @@ export class MongoService {
   async closeShell(connectionId: string): Promise<void> {
     const session = this.shells.get(connectionId)
     this.shells.delete(connectionId)
-    if (session) await session.runtime.terminate()
+    if (!session) return
+    if (await this.terminateShellRuntime(session)) this.blockedShells.delete(connectionId)
+    else this.blockedShells.add(connectionId)
   }
 
   async listCollections(connectionId: string, database: string): Promise<CollectionInfo[]> {
     const active = this.requireRead(connectionId)
-    const collections = await active.client.db(database).listCollections({}, { nameOnly: true }).toArray()
+    const collections = await active.client.db(database).listCollections({}, { nameOnly: true, timeoutMS: writeOperationTimeoutMs }).toArray()
     return collections.filter(({ name }) => isVisibleCollection(name)).map(({ name, type }) => ({ name, type: type ?? "collection" }))
   }
 
@@ -337,7 +345,7 @@ export class MongoService {
       destructive: false,
     })
     const approvedActive = this.requireWrite(input.connectionId)
-    const result = await this.runApprovedWrite(() => approvedActive.client.db(input.database).collection(input.collection).replaceOne({ _id: id } as Filter<Document>, replacement, { timeoutMS: 30_000 }))
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(input.database).collection(input.collection).replaceOne({ _id: id } as Filter<Document>, replacement, { timeoutMS: writeOperationTimeoutMs }))
     if (result.matchedCount === 0) throw new Error("Document no longer exists.")
   }
 
@@ -352,7 +360,7 @@ export class MongoService {
       destructive: true,
     })
     const approvedActive = this.requireWrite(input.connectionId)
-    const result = await this.runApprovedWrite(() => approvedActive.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>, { timeoutMS: 30_000 }))
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>, { timeoutMS: writeOperationTimeoutMs }))
     if (result.deletedCount === 0) throw new Error("Document no longer exists.")
   }
 
@@ -371,7 +379,7 @@ export class MongoService {
 
   async agentFind(connectionId: string, database: string, collection: string, filter: Document, limit: number): Promise<unknown[]> {
     const active = this.requireRead(connectionId)
-    const documents = await active.client.db(database).collection(collection).find(filter, { promoteValues: false }).limit(Math.min(Math.max(limit, 1), 100)).toArray()
+    const documents = await active.client.db(database).collection(collection).find(filter, { promoteValues: false, timeoutMS: writeOperationTimeoutMs }).limit(Math.min(Math.max(limit, 1), 100)).toArray()
     return serializeBsonArray(documents)
   }
 
@@ -381,13 +389,13 @@ export class MongoService {
       throw new Error("Agent aggregation pipelines cannot use $out or $merge. Use an explicit write tool instead.")
     }
     const boundedPipeline = [...pipeline, { $limit: Math.min(Math.max(limit, 1), 100) }]
-    const documents = await active.client.db(database).collection(collection).aggregate(boundedPipeline, { maxTimeMS: 30_000, promoteValues: false }).toArray()
+    const documents = await active.client.db(database).collection(collection).aggregate(boundedPipeline, { maxTimeMS: writeOperationTimeoutMs, timeoutMS: writeOperationTimeoutMs, promoteValues: false }).toArray()
     return serializeBsonArray(documents)
   }
 
   async agentCount(connectionId: string, database: string, collection: string, filter: Document): Promise<number> {
     const active = this.requireRead(connectionId)
-    return active.client.db(database).collection(collection).countDocuments(filter, { maxTimeMS: 30_000 })
+    return active.client.db(database).collection(collection).countDocuments(filter, { maxTimeMS: writeOperationTimeoutMs, timeoutMS: writeOperationTimeoutMs })
   }
 
   async agentInsertOne(connectionId: string, database: string, collection: string, document: Document, approvalScope: string): Promise<unknown> {
@@ -402,7 +410,7 @@ export class MongoService {
       destructive: false,
     })
     const approvedActive = this.requireAgentWrite(connectionId)
-    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).insertOne(document, { timeoutMS: 30_000 }))
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).insertOne(document, { timeoutMS: writeOperationTimeoutMs }))
     return serializeBson({ acknowledged: result.acknowledged, insertedId: result.insertedId })
   }
 
@@ -419,7 +427,7 @@ export class MongoService {
       destructive: false,
     })
     const approvedActive = this.requireAgentWrite(connectionId)
-    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).updateOne(filter, update, { timeoutMS: 30_000 }))
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).updateOne(filter, update, { timeoutMS: writeOperationTimeoutMs }))
     return { acknowledged: result.acknowledged, matchedCount: result.matchedCount, modifiedCount: result.modifiedCount }
   }
 
@@ -436,13 +444,13 @@ export class MongoService {
       destructive: true,
     })
     const approvedActive = this.requireAgentWrite(connectionId)
-    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).deleteOne(filter, { timeoutMS: 30_000 }))
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).deleteOne(filter, { timeoutMS: writeOperationTimeoutMs }))
     return { acknowledged: result.acknowledged, deletedCount: result.deletedCount }
   }
 
   private async listDatabases(connectionId: string): Promise<DatabaseInfo[]> {
     const active = this.requireRead(connectionId)
-    const result = await active.client.db("admin").admin().listDatabases()
+    const result = await active.client.db("admin").admin().listDatabases({ timeoutMS: writeOperationTimeoutMs })
     return result.databases.filter(({ name }) => isVisibleDatabase(name)).map(({ name, sizeOnDisk, empty }) => ({ name, sizeOnDisk, empty }))
   }
 
@@ -454,8 +462,44 @@ export class MongoService {
     try {
       return await operation()
     } catch (error) {
+      if (!(error instanceof MongoOperationTimeoutError) && !(error instanceof MongoNetworkError) && !(error instanceof MongoWriteConcernError)) throw error
       const detail = error instanceof Error ? error.message : String(error)
       throw new Error(`MongoDB did not confirm the approved write. Its outcome may be unknown; verify the target data before retrying. ${detail}`, { cause: error })
+    }
+  }
+
+  private async runShellCommand(connectionId: string, session: ShellSession, code: string, timeoutMs = writeOperationTimeoutMs): Promise<MongoshEvaluationResult> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        session.runtime.evaluate(code),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            if (this.shells.get(connectionId) === session) this.shells.delete(connectionId)
+            this.blockedShells.add(connectionId)
+            void session.runtime.interrupt().catch(() => false)
+            void this.terminateShellRuntime(session).then((terminated) => {
+              if (terminated) this.blockedShells.delete(connectionId)
+            })
+            const seconds = Math.round(writeOperationTimeoutMs / 1_000)
+            reject(new Error(`${shellExecutionTimeoutMarker}The shell command exceeded ${seconds} seconds and is being stopped. Its write outcome may be unknown; verify the target data before retrying.`))
+          }, timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
+  }
+
+  private async terminateShellRuntime(session: ShellSession, timeoutMs = 2_000): Promise<boolean> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        session.runtime.terminate().then(() => true, () => false),
+        new Promise<false>((resolve) => { timeout = setTimeout(() => resolve(false), timeoutMs) }),
+      ])
+    } finally {
+      if (timeout) clearTimeout(timeout)
     }
   }
 

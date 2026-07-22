@@ -1,9 +1,10 @@
 import { BrowserWindow } from "electron"
 import type { WriteApprovalResponse } from "../shared/types"
 import { WriteApprovalBroker, type WriteApprovalInput } from "./write-approval-broker"
+import { writeApprovalTimeoutMs } from "./write-timeouts"
 
 export class WriteApprovalService {
-  private readonly broker = new WriteApprovalBroker(120_000, (id) => this.notifyCancelled(id))
+  private readonly broker = new WriteApprovalBroker(writeApprovalTimeoutMs, (id) => this.notifyCancelled(id))
   private activeRequest?: { id: string; webContentsId: number }
 
   request(input: WriteApprovalInput): Promise<void> {
@@ -47,14 +48,15 @@ export class WriteApprovalService {
   }
 
   private notifyCancelled(id: string): void {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
-        try {
-          window.webContents.send("write-approval:cancelled", id)
-        } catch {
-          // The approval promise must settle even if a renderer disappears.
-        }
-      }
+    const target = this.activeRequest
+    const window = target
+      ? BrowserWindow.getAllWindows().find((candidate) => candidate.webContents.id === target.webContentsId)
+      : undefined
+    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
+    try {
+      window.webContents.send("write-approval:cancelled", id)
+    } catch {
+      // The approval promise must settle even if the renderer disappears.
     }
   }
 }

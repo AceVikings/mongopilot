@@ -2,37 +2,33 @@ import { contextBridge, ipcRenderer } from "electron"
 import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, UpdateStatus, VisualizationGenerateInput, VisualizationRefreshInput, WriteApprovalRequest, WriteApprovalResponse } from "../shared/types"
 
 let queuedWriteApproval: WriteApprovalRequest | undefined
-let writeApprovalListener: ((request: WriteApprovalRequest) => void) | undefined
-let writeApprovalCancelledListener: ((id: string) => void) | undefined
+const writeApprovalListeners = new Set<(request: WriteApprovalRequest) => void>()
+const writeApprovalCancelledListeners = new Set<(id: string) => void>()
 
 ipcRenderer.on("write-approval:requested", (_event, request: WriteApprovalRequest) => {
-  if (writeApprovalListener) writeApprovalListener(request)
-  else queuedWriteApproval = request
+  if (writeApprovalListeners.size === 0) queuedWriteApproval = request
+  else for (const listener of writeApprovalListeners) listener(request)
 })
 ipcRenderer.on("write-approval:cancelled", (_event, id: string) => {
   if (queuedWriteApproval?.id === id) queuedWriteApproval = undefined
-  writeApprovalCancelledListener?.(id)
+  for (const listener of writeApprovalCancelledListeners) listener(id)
 })
 
 const api: MongoPilotApi = {
   writeApprovals: {
     resolve: (response: WriteApprovalResponse) => ipcRenderer.invoke("write-approval:resolve", response),
     onRequest: (callback: (request: WriteApprovalRequest) => void) => {
-      writeApprovalListener = callback
+      writeApprovalListeners.add(callback)
       if (queuedWriteApproval) {
         const request = queuedWriteApproval
         queuedWriteApproval = undefined
         callback(request)
       }
-      return () => {
-        if (writeApprovalListener === callback) writeApprovalListener = undefined
-      }
+      return () => writeApprovalListeners.delete(callback)
     },
     onCancelled: (callback: (id: string) => void) => {
-      writeApprovalCancelledListener = callback
-      return () => {
-        if (writeApprovalCancelledListener === callback) writeApprovalCancelledListener = undefined
-      }
+      writeApprovalCancelledListeners.add(callback)
+      return () => writeApprovalCancelledListeners.delete(callback)
     },
   },
   connections: {
