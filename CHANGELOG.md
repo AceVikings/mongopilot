@@ -4,6 +4,13 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-07-23
+
+### Fixed
+
+- Restore full-height connections and Copilot panel resize handles with reliable pointer capture, keyboard control, and immediate preference persistence.
+- Preserve preferred panel widths while the native window temporarily constrains the workspace.
+
 ## [0.2.9] - 2026-07-22
 
 ### Changed

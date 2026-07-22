@@ -66,6 +66,10 @@ button,
   -webkit-app-region: drag;
 }
 
+.panel-resize-handle {
+  -webkit-app-region: no-drag;
+}
+
 .scrollbar-thin {
   scrollbar-color: var(--color-line-strong) transparent;
   scrollbar-width: thin;

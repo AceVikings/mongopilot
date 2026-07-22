@@ -30,7 +30,7 @@ import {
   Trash,
   X,
 } from "@phosphor-icons/react"
-import { memo, type FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
+import { memo, type FormEvent, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type {
@@ -138,6 +138,7 @@ function PanelResizeHandle({
   max,
   direction,
   onResize,
+  onResizeEnd,
 }: {
   label: string
   position: number | string
@@ -146,20 +147,54 @@ function PanelResizeHandle({
   max: number
   direction: 1 | -1
   onResize: (value: number) => void
+  onResizeEnd: (value: number) => void
 }) {
-  const drag = useRef<{ pointerId: number; startX: number; startValue: number } | null>(null)
+  const handleRef = useRef<HTMLHRElement>(null)
+  const drag = useRef<{ pointerId: number; startX: number; startValue: number; moved: boolean } | null>(null)
+  const latestValue = useRef(value)
+  const onResizeRef = useRef(onResize)
+  const onResizeEndRef = useRef(onResizeEnd)
   const [dragging, setDragging] = useState(false)
+  onResizeRef.current = onResize
+  onResizeEndRef.current = onResizeEnd
 
-  function finishDrag(event: React.PointerEvent<HTMLHRElement>): void {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  const finishDrag = useCallback((pointerId?: number) => {
+    const current = drag.current
+    if (!current || (pointerId !== undefined && current.pointerId !== pointerId)) return
     drag.current = null
+    if (handleRef.current?.hasPointerCapture(current.pointerId)) handleRef.current.releasePointerCapture(current.pointerId)
     setDragging(false)
     document.body.style.cursor = ""
     document.body.style.userSelect = ""
-  }
+    if (current.moved) onResizeEndRef.current(latestValue.current)
+  }, [])
+
+  useEffect(() => {
+    if (!dragging) return
+    const move = (event: PointerEvent) => {
+      if (!drag.current || drag.current.pointerId !== event.pointerId) return
+      if (event.clientX !== drag.current.startX) drag.current.moved = true
+      const next = clamp(drag.current.startValue + (event.clientX - drag.current.startX) * direction, min, max)
+      latestValue.current = next
+      onResizeRef.current(next)
+    }
+    const finish = (event: PointerEvent) => finishDrag(event.pointerId)
+    const blur = () => finishDrag()
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", finish, { once: true })
+    window.addEventListener("pointercancel", finish, { once: true })
+    window.addEventListener("blur", blur, { once: true })
+    return () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", finish)
+      window.removeEventListener("pointercancel", finish)
+      window.removeEventListener("blur", blur)
+    }
+  }, [direction, dragging, finishDrag, max, min])
 
   return (
     <hr
+      ref={handleRef}
       aria-label={label}
       aria-orientation="vertical"
       aria-valuemin={min}
@@ -168,32 +203,25 @@ function PanelResizeHandle({
       tabIndex={0}
       style={{ left: position }}
       onPointerDown={(event) => {
+        if (drag.current) return
         event.preventDefault()
-        drag.current = { pointerId: event.pointerId, startX: event.clientX, startValue: value }
-        setDragging(true)
+        latestValue.current = value
+        drag.current = { pointerId: event.pointerId, startX: event.clientX, startValue: value, moved: false }
         event.currentTarget.setPointerCapture(event.pointerId)
+        setDragging(true)
         document.body.style.cursor = "col-resize"
         document.body.style.userSelect = "none"
-      }}
-      onPointerMove={(event) => {
-        if (!drag.current || drag.current.pointerId !== event.pointerId) return
-        onResize(clamp(drag.current.startValue + (event.clientX - drag.current.startX) * direction, min, max))
-      }}
-      onPointerUp={finishDrag}
-      onPointerCancel={finishDrag}
-      onLostPointerCapture={() => {
-        drag.current = null
-        setDragging(false)
-        document.body.style.cursor = ""
-        document.body.style.userSelect = ""
       }}
       onKeyDown={(event) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
         event.preventDefault()
         const boundaryDelta = event.key === "ArrowRight" ? 12 : -12
-        onResize(clamp(value + boundaryDelta * direction, min, max))
+        const next = clamp(value + boundaryDelta * direction, min, max)
+        onResize(next)
+        onResizeEnd(next)
       }}
-      className={`group absolute inset-y-0 z-40 m-0 w-3 -translate-x-1/2 cursor-col-resize touch-none border-0 focus-visible:outline-none before:absolute before:left-1/2 before:top-1/2 before:z-10 before:h-10 before:w-1 before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:border before:border-line-strong before:bg-raised before:opacity-45 before:transition-[border-color,background-color,opacity] before:duration-150 after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-line after:transition-[width,background-color] after:duration-150 hover:before:border-accent hover:before:bg-accent-soft hover:before:opacity-100 hover:after:w-0.5 hover:after:bg-accent focus-visible:before:border-accent focus-visible:before:bg-accent-soft focus-visible:before:opacity-100 focus-visible:after:w-0.5 focus-visible:after:bg-accent ${dragging ? "before:border-accent before:bg-accent-soft before:opacity-100 after:w-0.5 after:bg-accent" : ""}`}
+      onLostPointerCapture={(event) => finishDrag(event.pointerId)}
+      className={`panel-resize-handle group pointer-events-auto absolute inset-y-0 z-40 m-0 h-full w-3 -translate-x-1/2 cursor-col-resize touch-none select-none border-0 bg-transparent p-0 focus-visible:outline-none before:absolute before:left-1/2 before:top-1/2 before:z-10 before:h-10 before:w-1 before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:border before:border-line-strong before:bg-raised before:opacity-45 before:transition-[border-color,background-color,opacity] before:duration-150 after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-line after:transition-[width,background-color] after:duration-150 hover:before:border-accent hover:before:bg-accent-soft hover:before:opacity-100 hover:after:w-0.5 hover:after:bg-accent focus-visible:before:border-accent focus-visible:before:bg-accent-soft focus-visible:before:opacity-100 focus-visible:after:w-0.5 focus-visible:after:bg-accent ${dragging ? "before:border-accent before:bg-accent-soft before:opacity-100 after:w-0.5 after:bg-accent" : ""}`}
     />
   )
 }
@@ -1144,6 +1172,8 @@ export default function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [agentMode, setAgentMode] = useState<AgentAccessMode>("read-only")
   const [panelWidths, setPanelWidths] = useState(() => ({ left: readPanelWidth("left"), right: readPanelWidth("right") }))
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
+  const preferredPanelWidths = useRef(panelWidths)
   const removeCancelRef = useRef<HTMLButtonElement>(null)
   const collectionTargetRef = useRef("")
   const databaseRequestRef = useRef(0)
@@ -1153,11 +1183,11 @@ export default function App() {
 
   const leftPanelMax = Math.max(
     panelLimits.left.min,
-    Math.min(panelLimits.left.max, window.innerWidth - panelWidths.right - panelLimits.centerMin),
+    Math.min(panelLimits.left.max, viewportWidth - panelWidths.right - panelLimits.centerMin),
   )
   const rightPanelMax = Math.max(
     panelLimits.right.min,
-    Math.min(panelLimits.right.max, window.innerWidth - panelWidths.left - panelLimits.centerMin),
+    Math.min(panelLimits.right.max, viewportWidth - panelWidths.left - panelLimits.centerMin),
   )
   const workspaceColumns = `${panelWidths.left}px minmax(${panelLimits.centerMin}px, 1fr) ${panelWidths.right}px`
 
@@ -1232,24 +1262,17 @@ export default function App() {
   }, [pendingRemoveConnection])
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      localStorage.setItem("mongo-pilot:panel-width:left", String(Math.round(panelWidths.left)))
-      localStorage.setItem("mongo-pilot:panel-width:right", String(Math.round(panelWidths.right)))
-    }, 200)
-    return () => window.clearTimeout(timeout)
-  }, [panelWidths])
-
-  useEffect(() => {
     const fitPanelsToWindow = () => {
+      setViewportWidth(window.innerWidth)
       setPanelWidths((current) => {
         const available = Math.max(
           panelLimits.left.min + panelLimits.right.min,
           window.innerWidth - panelLimits.centerMin,
         )
-        let left = current.left
-        let right = current.right
+        let left = preferredPanelWidths.current.left
+        let right = preferredPanelWidths.current.right
         let overflow = left + right - available
-        if (overflow <= 0) return current
+        if (overflow <= 0) return current.left === left && current.right === right ? current : { left, right }
         const rightReduction = Math.min(overflow, right - panelLimits.right.min)
         right -= rightReduction
         overflow -= rightReduction
@@ -2129,7 +2152,14 @@ export default function App() {
           min={panelLimits.left.min}
           max={leftPanelMax}
           direction={1}
-          onResize={(value) => setPanelWidths((current) => ({ ...current, left: value }))}
+          onResize={(value) => {
+            setPanelWidths((current) => {
+              const next = clamp(value, panelLimits.left.min, Math.min(panelLimits.left.max, viewportWidth - current.right - panelLimits.centerMin))
+              preferredPanelWidths.current.left = next
+              return { ...current, left: next }
+            })
+          }}
+          onResizeEnd={() => window.requestAnimationFrame(() => localStorage.setItem("mongo-pilot:panel-width:left", String(Math.round(preferredPanelWidths.current.left))))}
         />
         <PanelResizeHandle
           label="Resize copilot panel"
@@ -2138,7 +2168,14 @@ export default function App() {
           min={panelLimits.right.min}
           max={rightPanelMax}
           direction={-1}
-          onResize={(value) => setPanelWidths((current) => ({ ...current, right: value }))}
+          onResize={(value) => {
+            setPanelWidths((current) => {
+              const next = clamp(value, panelLimits.right.min, Math.min(panelLimits.right.max, viewportWidth - current.left - panelLimits.centerMin))
+              preferredPanelWidths.current.right = next
+              return { ...current, right: next }
+            })
+          }}
+          onResizeEnd={() => window.requestAnimationFrame(() => localStorage.setItem("mongo-pilot:panel-width:right", String(Math.round(preferredPanelWidths.current.right))))}
         />
       </div>
       {showConnectionDialog && <ConnectionDialog
