@@ -22,6 +22,7 @@ const result = analyzeDocuments([
 
 const fields = new Map(result.fields.map((field) => [field.path, field]))
 assert.equal(result.sampleCount, 2)
+assert.equal(result.truncated, false)
 assert.equal(result.durationMs, 7)
 assert.deepEqual(fields.get("_id"), { path: "_id", presentCount: 2, types: [{ name: "ObjectId", count: 2 }] })
 assert.deepEqual(fields.get("name"), {
@@ -39,5 +40,13 @@ assert.deepEqual(fields.get("createdAt"), { path: "createdAt", presentCount: 1, 
 assert.deepEqual(fields.get("count"), { path: "count", presentCount: 1, types: [{ name: "Int32", count: 1 }] })
 assert.deepEqual(fields.get("score"), { path: "score", presentCount: 1, types: [{ name: "Double", count: 1 }] })
 assert.deepEqual(fields.get("large"), { path: "large", presentCount: 1, types: [{ name: "Long", count: 1 }] })
+
+const boundedArray = analyzeDocuments([{ values: [...Array.from({ length: 100 }, () => "sample"), 42] }])
+assert.deepEqual(boundedArray.fields.find((field) => field.path === "values[]")?.types, [{ name: "String", count: 1 }])
+
+const wideDocument = analyzeDocuments([Object.fromEntries(Array.from({ length: 1_001 }, (_, index) => [`field${index}`, index]))])
+assert.equal(wideDocument.truncated, true)
+assert.equal(wideDocument.sampleCount, 0)
+assert.equal(wideDocument.fields.length, 0)
 
 console.log("Schema analysis verified for nested fields, arrays, optional fields, and BSON types.")

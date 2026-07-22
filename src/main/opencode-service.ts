@@ -10,6 +10,7 @@ import { writeMcpTimeoutMs } from "./write-timeouts"
 
 const mongoReadTools = ["mongo_list_databases", "mongo_list_collections", "mongo_find", "mongo_aggregate", "mongo_count"] as const
 const mongoWriteTools = ["mongo_insert_one", "mongo_update_one", "mongo_delete_one"] as const
+const startupOutputLimit = 64 * 1024
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
   let timeout: NodeJS.Timeout | undefined
@@ -452,28 +453,41 @@ export class OpencodeService {
     return new Promise((resolve, reject) => {
       let output = ""
       let settled = false
-      const timeout = setTimeout(() => fail(new Error(`OpenCode did not start within 30 seconds.${output.trim() ? `\n${output.trim()}` : ""}`)), 30_000)
+      const ignoreProcessError = () => undefined
+      const cleanup = () => {
+        clearTimeout(timeout)
+        processHandle.stdout?.off("data", inspect)
+        processHandle.stderr?.off("data", inspect)
+        processHandle.off("error", fail)
+        processHandle.off("exit", exited)
+      }
       const fail = (error: Error) => {
         if (settled) return
         settled = true
-        clearTimeout(timeout)
+        processHandle.on("error", ignoreProcessError)
+        cleanup()
         processHandle.kill()
         reject(error)
       }
       const inspect = (chunk: Buffer) => {
-        output += chunk.toString()
+        output = `${output}${chunk.toString()}`.slice(-startupOutputLimit)
         const match = output.match(/opencode server listening on (https?:\/\/[^\s]+)/)
         if (!match || settled) return
         const url = match[1]
         if (!url) return
         settled = true
-        clearTimeout(timeout)
+        processHandle.on("error", ignoreProcessError)
+        cleanup()
+        processHandle.stdout?.resume()
+        processHandle.stderr?.resume()
         resolve(url)
       }
+      const exited = (code: number | null) => fail(new Error(`OpenCode exited with code ${code}.${output.trim() ? `\n${output.trim()}` : ""}`))
+      const timeout = setTimeout(() => fail(new Error(`OpenCode did not start within 30 seconds.${output.trim() ? `\n${output.trim()}` : ""}`)), 30_000)
       processHandle.stdout?.on("data", inspect)
       processHandle.stderr?.on("data", inspect)
       processHandle.once("error", fail)
-      processHandle.once("exit", (code) => fail(new Error(`OpenCode exited with code ${code}.${output.trim() ? `\n${output.trim()}` : ""}`)))
+      processHandle.once("exit", exited)
     })
   }
 }

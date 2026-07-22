@@ -30,7 +30,7 @@ import {
   Trash,
   X,
 } from "@phosphor-icons/react"
-import { type FormEvent, useDeferredValue, useEffect, useRef, useState } from "react"
+import { memo, type FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type {
@@ -198,7 +198,7 @@ function PanelResizeHandle({
   )
 }
 
-function MarkdownMessage({ text }: { text: string }) {
+const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
   return (
     <div className="markdown-message">
       <ReactMarkdown
@@ -211,7 +211,7 @@ function MarkdownMessage({ text }: { text: string }) {
       </ReactMarkdown>
     </div>
   )
-}
+})
 
 function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick: () => void }) {
   return (
@@ -299,6 +299,7 @@ const bsonTextColor: Record<BsonDisplayKind, string> = {
   regex: "text-accent",
   special: "text-muted",
 }
+const documentEntryBatchSize = 100
 
 function documentKey(key: string): string {
   return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
@@ -306,6 +307,7 @@ function documentKey(key: string): string {
 
 function JsonValue({ value, path, dateMode }: { value: unknown; path: string; dateMode: DateDisplayMode }) {
   const [expanded, setExpanded] = useState(false)
+  const [visibleEntries, setVisibleEntries] = useState(documentEntryBatchSize)
   const bson = getBsonDisplay(value, dateMode)
   if (bson) return <span className={`break-all ${bsonTextColor[bson.kind]}`}>{bson.text}</span>
   const isArray = Array.isArray(value)
@@ -333,12 +335,13 @@ function JsonValue({ value, path, dateMode }: { value: unknown; path: string; da
       </button>
       {expanded && (
         <span className="mt-1 block border-l border-line pl-4">
-          {entries.map(([key, child]) => (
+          {entries.slice(0, visibleEntries).map(([key, child]) => (
             <span key={`${path}.${key}`} className="block min-h-6 leading-6">
               <span className="font-semibold text-muted">{isArray ? key : documentKey(key)}: </span>
               <JsonValue value={child} path={`${path}.${key}`} dateMode={dateMode} />
             </span>
           ))}
+          {entries.length > documentEntryBatchSize && <button type="button" aria-disabled={visibleEntries >= entries.length} onClick={() => setVisibleEntries((count) => Math.min(count + documentEntryBatchSize, entries.length))} className={`mt-1 min-h-10 rounded px-2 text-[10px] font-medium focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${visibleEntries < entries.length ? "text-accent hover:bg-raised" : "cursor-default text-faint"}`}>{visibleEntries < entries.length ? `Show ${Math.min(documentEntryBatchSize, entries.length - visibleEntries)} more` : "All entries shown"}</button>}
         </span>
       )}
     </span>
@@ -346,17 +349,20 @@ function JsonValue({ value, path, dateMode }: { value: unknown; path: string; da
 }
 
 function JsonDocument({ document, dateMode = "database" }: { document: unknown; dateMode?: DateDisplayMode }) {
+  const [visibleEntries, setVisibleEntries] = useState(documentEntryBatchSize)
   if (document === null || typeof document !== "object" || Array.isArray(document)) {
     return <JsonValue value={document} path="document" dateMode={dateMode} />
   }
+  const entries = Object.entries(document as Record<string, unknown>)
   return (
     <div className="min-w-0 font-mono text-xs leading-6">
-      {Object.entries(document as Record<string, unknown>).map(([key, value]) => (
+      {entries.slice(0, visibleEntries).map(([key, value]) => (
         <div key={key} className="min-h-6">
           <span className="font-semibold text-muted">{documentKey(key)}: </span>
           <JsonValue value={value} path={key} dateMode={dateMode} />
         </div>
       ))}
+      {entries.length > documentEntryBatchSize && <button type="button" aria-disabled={visibleEntries >= entries.length} onClick={() => setVisibleEntries((count) => Math.min(count + documentEntryBatchSize, entries.length))} className={`mt-1 min-h-10 rounded px-2 text-[10px] font-medium focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${visibleEntries < entries.length ? "text-accent hover:bg-raised" : "cursor-default text-faint"}`}>{visibleEntries < entries.length ? `Show ${Math.min(documentEntryBatchSize, entries.length - visibleEntries)} more` : "All entries shown"}</button>}
     </div>
   )
 }
@@ -368,6 +374,11 @@ function parseTransportDocument(document: string): unknown {
     return document
   }
 }
+
+const TransportDocument = memo(function TransportDocument({ document, dateMode }: { document: string; dateMode: DateDisplayMode }) {
+  const parsed = useMemo(() => parseTransportDocument(document), [document])
+  return <JsonDocument key={document} document={parsed} dateMode={dateMode} />
+})
 
 function prettyTransportDocument(document: string): string {
   const parsed = parseTransportDocument(document)
@@ -404,15 +415,17 @@ function SchemaPanel({
         <div className="mx-1 h-4 border-l border-line" />
         <label htmlFor="schema-sample-size" className="font-mono text-[9px] uppercase tracking-wider text-faint">Sample</label>
         <CustomSelect id="schema-sample-size" ariaLabel="Schema sample size" value={sampleSize} disabled={loading} options={schemaSampleSizes.map((size) => ({ value: size, label: integerFormatter.format(size) }))} onChange={onSampleSizeChange} className="w-20" buttonClassName="h-7 font-mono text-[10px] tabular-nums" />
-        {analysis && <span className="ml-auto font-mono text-[9px] tabular-nums text-faint">{integerFormatter.format(analysis.sampleCount)} SAMPLED · {integerFormatter.format(analysis.durationMs)} MS</span>}
+        {analysis && <span className="ml-auto font-mono text-[9px] tabular-nums text-faint">{integerFormatter.format(analysis.sampleCount)} SAMPLED{analysis.truncated ? " · BOUNDED" : ""} · {integerFormatter.format(analysis.durationMs)} MS</span>}
       </div>
       <div className="scrollbar-thin flex-1 overflow-auto p-3">
         {loading ? (
           <div role="status" aria-label="Analyzing schema" className="space-y-2">{[0, 1, 2, 3, 4].map((item) => <div key={item} className="h-10 animate-pulse rounded border border-line bg-panel" />)}</div>
         ) : error ? (
           <div role="alert" className="rounded-md border border-danger/30 bg-danger/10 p-4 text-xs text-danger">{error}</div>
+        ) : analysis?.truncated && analysis.sampleCount === 0 ? (
+          <div className="grid min-h-64 place-items-center rounded-lg border border-warning/30 bg-warning/10"><div className="max-w-sm text-center"><Code size={28} className="mx-auto mb-3 text-warning" aria-hidden="true" /><h3 className="text-sm font-semibold">Documents are too wide to analyze safely</h3><p className="mt-1 text-xs leading-5 text-muted">Schema analysis stopped before it could complete a document. Use a smaller sample or inspect individual documents instead.</p></div></div>
         ) : analysis?.fields.length ? (
-          <div className="overflow-hidden rounded-md border border-line bg-panel">
+          <div>{analysis.truncated && <p className="mb-2 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">Large documents were skipped to keep schema analysis responsive.</p>}<div className="overflow-hidden rounded-md border border-line bg-panel">
             <table className="w-full border-collapse text-left text-xs">
               <thead className="sticky top-0 z-10 bg-raised text-[10px] uppercase tracking-wider text-muted">
                 <tr><th className="px-3 py-2 font-medium">Field path</th><th className="px-3 py-2 font-medium">BSON types</th><th className="px-3 py-2 text-right font-medium">Presence</th></tr>
@@ -430,7 +443,7 @@ function SchemaPanel({
                 })}
               </tbody>
             </table>
-          </div>
+          </div></div>
         ) : (
           <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-sm text-center"><Code size={28} className="mx-auto mb-3 text-faint" aria-hidden="true" /><h3 className="text-sm font-semibold">No schema fields found</h3><p className="mt-1 text-xs leading-5 text-muted">The sampled collection contains no documents or visible fields.</p></div></div>
         )}
@@ -522,7 +535,7 @@ function AggregationsPanel({
             {result.documents.map((row, index) => (
               <article key={row.id} className="grid grid-cols-[36px_minmax(0,1fr)] text-xs">
                 <div className="border-r border-line bg-shell py-3 text-center font-mono tabular-nums text-faint">{String(index + 1).padStart(2, "0")}</div>
-                <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3"><JsonDocument document={parseTransportDocument(row.document)} dateMode={dateMode} /></div>
+                <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3"><TransportDocument document={row.document} dateMode={dateMode} /></div>
               </article>
             ))}
           </div>
@@ -703,7 +716,7 @@ function ConnectionDialog({ onClose, onSaved }: { onClose: () => void; onSaved: 
   )
 }
 
-function CopilotPanel({
+const CopilotPanel = memo(function CopilotPanel({
   status,
   context,
   canWrite,
@@ -1068,7 +1081,7 @@ function CopilotPanel({
       </form>
     </aside>
   )
-}
+})
 
 export default function App() {
   const [connections, setConnections] = useState<SavedConnection[]>([])
@@ -1083,6 +1096,8 @@ export default function App() {
   const [pageSize, setPageSize] = useState(20)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
+  const [totalMode, setTotalMode] = useState<FindResult["totalMode"]>("exact")
+  const [hasMore, setHasMore] = useState(false)
   const [showConnectionDialog, setShowConnectionDialog] = useState(false)
   const [querying, setQuerying] = useState(false)
   const [error, setError] = useState("")
@@ -1131,6 +1146,8 @@ export default function App() {
   const [panelWidths, setPanelWidths] = useState(() => ({ left: readPanelWidth("left"), right: readPanelWidth("right") }))
   const removeCancelRef = useRef<HTMLButtonElement>(null)
   const collectionTargetRef = useRef("")
+  const databaseRequestRef = useRef(0)
+  const queryRequestRef = useRef(0)
   const resolvingWriteApprovalRef = useRef<string | null>(null)
   const writeApprovalRequestIdRef = useRef<string | null>(null)
 
@@ -1146,10 +1163,23 @@ export default function App() {
 
   useEffect(() => {
     if (!window.mongoPilot) return
-    void window.mongoPilot.connections.list().then(setConnections).catch((reason) => setError(String(reason)))
-    void window.mongoPilot.copilot.start().then(setCopilotStatus).catch((reason) => {
-      setCopilotStatus({ state: "error", message: reason instanceof Error ? reason.message : "OpenCode failed to start." })
+    let cancelled = false
+    void window.mongoPilot.connections.list().then((next) => {
+      if (!cancelled) setConnections(next)
+    }).catch((reason) => {
+      if (!cancelled) setError(String(reason))
     })
+    const idle = window.requestIdleCallback(() => {
+      void window.mongoPilot?.copilot.start().then((next) => {
+        if (!cancelled) setCopilotStatus(next)
+      }).catch((reason) => {
+        if (!cancelled) setCopilotStatus({ state: "error", message: reason instanceof Error ? reason.message : "OpenCode failed to start." })
+      })
+    }, { timeout: 1_000 })
+    return () => {
+      cancelled = true
+      window.cancelIdleCallback(idle)
+    }
   }, [])
 
   useEffect(() => {
@@ -1202,8 +1232,11 @@ export default function App() {
   }, [pendingRemoveConnection])
 
   useEffect(() => {
-    localStorage.setItem("mongo-pilot:panel-width:left", String(Math.round(panelWidths.left)))
-    localStorage.setItem("mongo-pilot:panel-width:right", String(Math.round(panelWidths.right)))
+    const timeout = window.setTimeout(() => {
+      localStorage.setItem("mongo-pilot:panel-width:left", String(Math.round(panelWidths.left)))
+      localStorage.setItem("mongo-pilot:panel-width:right", String(Math.round(panelWidths.right)))
+    }, 200)
+    return () => window.clearTimeout(timeout)
   }, [panelWidths])
 
   useEffect(() => {
@@ -1285,7 +1318,11 @@ export default function App() {
     setVisualizationLoading(false)
     setVisualizationError("")
     collectionTargetRef.current = ""
+    databaseRequestRef.current += 1
+    queryRequestRef.current += 1
     setTotal(0)
+    setTotalMode("exact")
+    setHasMore(false)
     setPage(1)
     setEditingDocumentId(null)
     setAgentMode("read-only")
@@ -1323,10 +1360,8 @@ export default function App() {
     next: { environment?: ConnectionEnvironment; connectionAccessMode?: ConnectionAccessMode },
   ): Promise<void> {
     if (!window.mongoPilot) return
-    const environment = next.environment ?? connection.environment
-    const connectionAccessMode = next.connectionAccessMode ?? connection.connectionAccessMode
     try {
-      const updated = await window.mongoPilot.connections.updateSettings({ id: connection.id, environment, connectionAccessMode })
+      const updated = await window.mongoPilot.connections.updateSettings({ id: connection.id, ...next })
       setConnections((current) => current.map((item) => item.id === updated.id ? updated : item))
       if (activeConnection?.id === updated.id) {
         setActiveConnection(updated)
@@ -1335,9 +1370,9 @@ export default function App() {
           setEditingDocumentId(null)
         }
       }
-      const message = next.environment
-        ? `${updated.name} is labeled ${environmentOptions.find((option) => option.value === environment)?.label ?? environment}.`
-        : `${updated.name} is now ${connectionAccessMode === "read-only" ? "read only" : "read / write"}.`
+      const message = next.environment !== undefined
+        ? `${updated.name} is labeled ${environmentOptions.find((option) => option.value === updated.environment)?.label ?? updated.environment}.`
+        : `${updated.name} is now ${updated.connectionAccessMode === "read-only" ? "read only" : "read / write"}.`
       showConnectionNotice(message)
     } catch (reason) {
       showConnectionNotice(reason instanceof Error ? reason.message : "Could not update connection settings.", true)
@@ -1375,6 +1410,8 @@ export default function App() {
       setDuration(null)
       setQueryRan(false)
       setTotal(0)
+      setTotalMode("exact")
+      setHasMore(false)
       setPage(1)
       const first = result.databases[0]?.name
       if (first) await selectDatabase(connection.id, first)
@@ -1391,11 +1428,25 @@ export default function App() {
   }
 
   async function selectDatabase(connectionId: string, name: string) {
+    const requestId = ++databaseRequestRef.current
+    collectionTargetRef.current = ""
+    queryRequestRef.current += 1
+    setQuerying(false)
     setSelectedDatabase(name)
+    setCollections([])
+    setSelectedCollection("")
+    setDocuments([])
+    setQueryRan(false)
+    setTotal(0)
+    setTotalMode("exact")
+    setHasMore(false)
+    setPage(1)
+    setActiveCollectionTab("Documents")
     if (!window.mongoPilot) return
     setError("")
     try {
       const next = await window.mongoPilot.database.listCollections(connectionId, name)
+      if (requestId !== databaseRequestRef.current) return
       setCollections(next)
       const firstCollection = next[0]?.name
       if (firstCollection) await selectCollection(connectionId, name, firstCollection)
@@ -1425,10 +1476,14 @@ export default function App() {
         setDuration(null)
         setQueryRan(false)
         setTotal(0)
+        setTotalMode("exact")
+        setHasMore(false)
         setPage(1)
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not load collections.")
+      if (requestId === databaseRequestRef.current) {
+        setError(reason instanceof Error ? reason.message : "Could not load collections.")
+      }
     }
   }
 
@@ -1443,6 +1498,8 @@ export default function App() {
     setPageSize(preferences.pageSize)
     setPage(1)
     setTotal(0)
+    setTotalMode("exact")
+    setHasMore(false)
     setDocuments([])
     setQueryRan(false)
     setActiveCollectionTab("Documents")
@@ -1479,6 +1536,8 @@ export default function App() {
     const nextPageSize = options.pageSize ?? pageSize
     const nextPage = options.page ?? page
     if (!database || !collection) return
+    const target = `${connectionId}:${database}:${collection}`
+    const requestId = ++queryRequestRef.current
     setQuerying(true)
     setError("")
     try {
@@ -1491,9 +1550,16 @@ export default function App() {
         skip: (nextPage - 1) * nextPageSize,
         limit: nextPageSize,
       })
+      if (requestId !== queryRequestRef.current || collectionTargetRef.current !== target) return
+      if (result.documents.length === 0 && nextPage > 1) {
+        void runQuery({ ...options, page: 1 })
+        return
+      }
       setDocuments(result.documents)
       setEditingDocumentId(null)
       setTotal(result.total)
+      setTotalMode(result.totalMode)
+      setHasMore(result.hasMore)
       setDuration(result.durationMs)
       setQueryRan(true)
       setPage(nextPage)
@@ -1501,9 +1567,11 @@ export default function App() {
       setSort(nextSort)
       saveCollectionPreferences(connectionId, database, collection, { sort: nextSort, pageSize: nextPageSize })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Query failed.")
+      if (requestId === queryRequestRef.current && collectionTargetRef.current === target) {
+        setError(reason instanceof Error ? reason.message : "Query failed.")
+      }
     } finally {
-      setQuerying(false)
+      if (requestId === queryRequestRef.current) setQuerying(false)
     }
   }
 
@@ -1756,7 +1824,8 @@ export default function App() {
   }
 
   const effectiveAgentMode: AgentAccessMode = activeConnection?.connectionAccessMode === "read-only" ? "read-only" : agentMode
-  const context = {
+  const availableConnections = useMemo(() => connections.map(({ name, host, environment, connectionAccessMode, agentAccessMode, favorite }) => ({ name, host, environment, connectionAccessMode, agentAccessMode, favorite })), [connections])
+  const context = useMemo(() => ({
     connectionId: activeConnection?.id,
     connectionName: activeConnection?.name ?? "No active connection",
     connectionHost: activeConnection?.host,
@@ -1765,8 +1834,8 @@ export default function App() {
     database: activeConnection ? selectedDatabase : "",
     collection: activeConnection ? selectedCollection : "",
     agentAccessMode: effectiveAgentMode,
-    availableConnections: connections.map(({ name, host, environment, connectionAccessMode, agentAccessMode, favorite }) => ({ name, host, environment, connectionAccessMode, agentAccessMode, favorite })),
-  }
+    availableConnections,
+  }), [activeConnection, availableConnections, effectiveAgentMode, selectedCollection, selectedDatabase])
   const activeSortPreset = sortPresets.some((preset) => preset.value === sort) ? sort : "custom"
 
   return (
@@ -1904,16 +1973,16 @@ export default function App() {
                   <div className="min-w-0 flex-1 rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
                     <div className="flex h-8 items-center border-b border-line px-3 font-mono text-[10px] uppercase tracking-wider text-faint"><Funnel size={13} className="mr-2" aria-hidden="true" />Filter</div>
                     <label htmlFor="filter" className="sr-only">MongoDB document filter</label>
-                    <textarea id="filter" value={filter} onChange={(event) => setFilter(event.target.value)} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none" />
+                     <textarea id="filter" value={filter} onChange={(event) => setFilter(event.target.value)} disabled={querying} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none disabled:cursor-wait disabled:opacity-60" />
                   </div>
                   <div className="min-w-0 rounded-md border border-line-strong bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
                     <div className="flex h-8 items-center gap-2 border-b border-line px-3 font-mono text-[10px] uppercase tracking-wider text-faint">
                       <span>Sort</span>
                       <label htmlFor="sort-preset" className="sr-only">Sort preset</label>
-                      <CustomSelect id="sort-preset" ariaLabel="Sort preset" value={activeSortPreset} options={[...(activeSortPreset === "custom" ? [{ value: "custom", label: "Custom" }] : []), ...sortPresets]} onChange={(value) => { if (value !== "custom") setSort(value) }} align="end" className="ml-auto w-40" buttonClassName="h-7 border-0 bg-transparent px-1 text-right font-sans text-[10px] normal-case tracking-normal" menuClassName="w-44" />
+                      <CustomSelect id="sort-preset" ariaLabel="Sort preset" value={activeSortPreset} disabled={querying} options={[...(activeSortPreset === "custom" ? [{ value: "custom", label: "Custom" }] : []), ...sortPresets]} onChange={(value) => { if (value !== "custom") setSort(value) }} align="end" className="ml-auto w-40" buttonClassName="h-7 border-0 bg-transparent px-1 text-right font-sans text-[10px] normal-case tracking-normal" menuClassName="w-44" />
                     </div>
                     <label htmlFor="sort" className="sr-only">MongoDB document sort</label>
-                    <textarea id="sort" value={sort} onChange={(event) => setSort(event.target.value)} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none" />
+                    <textarea id="sort" value={sort} onChange={(event) => setSort(event.target.value)} disabled={querying} spellCheck={false} rows={2} className="block w-full resize-none bg-transparent px-3 py-2 font-mono text-xs leading-5 text-ink focus:outline-none disabled:cursor-wait disabled:opacity-60" />
                   </div>
                   <button type="button" onClick={() => void runQuery({ page: 1 })} disabled={querying || !selectedDatabase || !selectedCollection} aria-busy={querying} className="flex h-10 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-shell focus-visible:outline-none disabled:cursor-not-allowed disabled:bg-line-strong disabled:text-muted"><Lightning size={14} weight="fill" aria-hidden="true" />{querying ? "Running" : "Run"}</button>
                 </div>
@@ -1930,10 +1999,10 @@ export default function App() {
                   <CustomSelect id="page-size" ariaLabel="Rows per page" value={pageSize} disabled={querying || !selectedCollection} options={pageSizes.map((size) => ({ value: size, label: String(size) }))} onChange={(nextPageSize) => void runQuery({ page: 1, pageSize: nextPageSize })} align="end" className="w-16" buttonClassName="h-7 font-mono text-[10px] tabular-nums" />
                   <div className="flex items-center gap-1">
                     <button type="button" aria-label="Previous page" onClick={() => void runQuery({ page: page - 1 })} disabled={querying || page <= 1} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-30"><CaretLeft size={12} aria-hidden="true" /></button>
-                    <span className="min-w-16 text-center font-mono text-[10px] text-faint">{queryRan ? `${page} / ${Math.max(1, Math.ceil(total / pageSize))}` : "- / -"}</span>
-                    <button type="button" aria-label="Next page" onClick={() => void runQuery({ page: page + 1 })} disabled={querying || !queryRan || page * pageSize >= total} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-30"><CaretRight size={12} aria-hidden="true" /></button>
+                    <span className="min-w-16 text-center font-mono text-[10px] text-faint">{queryRan ? totalMode === "exact" ? `${page} / ${Math.max(1, Math.ceil(total / pageSize))}` : `PAGE ${page}` : "- / -"}</span>
+                    <button type="button" aria-label="Next page" onClick={() => void runQuery({ page: page + 1 })} disabled={querying || !queryRan || !hasMore} className="grid size-7 place-items-center rounded text-muted hover:bg-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:opacity-30"><CaretRight size={12} aria-hidden="true" /></button>
                   </div>
-                  <p className="font-mono text-[9px] text-faint">{queryRan ? `${total} TOTAL${duration !== null ? ` · ${duration} MS` : ""}` : "NOT RUN"}</p>
+                  <p className="font-mono text-[9px] text-faint">{queryRan ? `${totalMode === "exact" ? `${total} TOTAL` : totalMode === "estimated" ? `~${total} TOTAL` : `${total}+ MATCHES`}${duration !== null ? ` · ${duration} MS` : ""}` : "NOT RUN"}</p>
                 </div>
               </div>
               <div className="scrollbar-thin flex-1 overflow-auto p-3">
@@ -1961,7 +2030,7 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3 pr-28"><JsonDocument document={parseTransportDocument(row.document)} dateMode={dateDisplayMode} /></div>
+                          <div className="scrollbar-thin min-w-0 overflow-x-auto px-4 py-3 pr-28"><TransportDocument document={row.document} dateMode={dateDisplayMode} /></div>
                         )}
                         {editingDocumentId !== row.id && (
                           <div className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-line bg-panel p-1 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">

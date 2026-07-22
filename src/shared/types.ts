@@ -26,8 +26,8 @@ export interface SaveConnectionInput {
 
 export interface UpdateConnectionSettingsInput {
   id: string
-  environment: ConnectionEnvironment
-  connectionAccessMode: ConnectionAccessMode
+  environment?: ConnectionEnvironment
+  connectionAccessMode?: ConnectionAccessMode
 }
 
 export interface ShellStartInput {
@@ -96,6 +96,7 @@ export interface SchemaFieldInfo {
 export interface SchemaAnalysisResult {
   fields: SchemaFieldInfo[]
   sampleCount: number
+  truncated: boolean
   durationMs: number
 }
 
@@ -174,6 +175,8 @@ export interface FindResult {
     document: string
   }>
   total: number
+  totalMode: "exact" | "estimated" | "minimum"
+  hasMore: boolean
   durationMs: number
 }
 

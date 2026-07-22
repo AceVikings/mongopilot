@@ -231,23 +231,32 @@ export class MongoService {
     const started = performance.now()
     const collection = active.client.db(input.database).collection(input.collection)
     const limit = Math.min(Math.max(input.limit, 1), 100)
+    const skip = Math.max(input.skip, 0)
+    const unfiltered = Object.keys(filter).length === 0
     const cursor = collection
       .find(filter as Record<string, unknown>, { maxTimeMS: 30_000, promoteValues: false })
       .sort(sort as Sort)
-      .skip(Math.max(input.skip, 0))
-      .limit(limit)
-      .batchSize(limit)
+      .skip(skip)
+      .limit(limit + 1)
+      .batchSize(limit + 1)
     if (Object.keys(sort).length > 0) cursor.allowDiskUse(true)
-    const [documents, total] = await Promise.all([
+    const [fetched, estimatedTotal] = await Promise.all([
       cursor.toArray(),
-      collection.countDocuments(filter as Record<string, unknown>, { maxTimeMS: 30_000 }),
+      unfiltered ? collection.estimatedDocumentCount({ maxTimeMS: 30_000 }).catch(() => 0) : Promise.resolve(0),
     ])
+    const hasMore = fetched.length > limit
+    const documents = fetched.slice(0, limit)
+    const observedTotal = skip + documents.length
+    const totalMode = !hasMore && !(documents.length === 0 && skip > 0) ? "exact" : unfiltered && estimatedTotal >= observedTotal + 1 ? "estimated" : "minimum"
+    const total = totalMode === "exact" ? observedTotal : unfiltered ? Math.max(estimatedTotal, observedTotal + 1) : observedTotal + 1
     return {
       documents: documents.map((document) => ({
         id: stringifyCanonicalExtendedJson(document._id),
         document: stringifyMongoDocument(document),
       })),
       total,
+      totalMode,
+      hasMore,
       durationMs: Math.round(performance.now() - started),
     }
   }

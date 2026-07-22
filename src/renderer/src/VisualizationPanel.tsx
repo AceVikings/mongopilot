@@ -1,5 +1,5 @@
 import { ArrowClockwise, ChartBar, Lightning, Sparkle, WarningCircle } from "@phosphor-icons/react"
-import type { FormEvent } from "react"
+import { memo, type FormEvent } from "react"
 import type { VisualizationResult, VisualizationSeries, VisualizationValue } from "../../shared/types"
 
 const chartColors = ["var(--color-accent)", "var(--color-bson-date)", "var(--color-warning)", "var(--color-bson-string)"]
@@ -46,6 +46,7 @@ function CartesianChart({ result }: { result: VisualizationResult }) {
   const plotWidth = width - bounds.left - bounds.right
   const plotHeight = height - bounds.top - bounds.bottom
   const values = rows.flatMap((row) => spec.series.map((series) => numberValue(row[series.field])).filter((value): value is number => value !== null))
+  const scatterXValues = spec.chartType === "scatter" ? rows.map((item) => numberValue(item[spec.categoryField])).filter((value): value is number => value !== null) : []
   if (values.length === 0) {
     return <ChartEmpty message="The generated query returned no numeric values for the selected series." />
   }
@@ -58,6 +59,8 @@ function CartesianChart({ result }: { result: VisualizationResult }) {
   const visibleLabels = Math.min(rows.length, 8)
   const labelStep = Math.max(1, Math.ceil(rows.length / visibleLabels))
   const gridValues = Array.from({ length: 5 }, (_, index) => minimum + (span * index) / 4).reverse()
+  const scatterXMin = scatterXValues.length > 0 ? Math.min(...scatterXValues) : 0
+  const scatterXSpan = scatterXValues.length > 0 ? Math.max(...scatterXValues) - scatterXMin || 1 : 1
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${spec.title} ${spec.chartType} chart`} className="h-full min-h-72 w-full overflow-visible">
@@ -94,10 +97,7 @@ function CartesianChart({ result }: { result: VisualizationResult }) {
         const xValue = numberValue(row[spec.categoryField])
         const yValue = numberValue(row[series.field])
         if (xValue === null || yValue === null) return null
-        const xValues = rows.map((item) => numberValue(item[spec.categoryField])).filter((value): value is number => value !== null)
-        const xMin = Math.min(...xValues)
-        const xSpan = Math.max(...xValues) - xMin || 1
-        const x = bounds.left + ((xValue - xMin) / xSpan) * plotWidth
+        const x = bounds.left + ((xValue - scatterXMin) / scatterXSpan) * plotWidth
         return <circle key={`${series.field}:${key}`} cx={x} cy={scaleY(yValue)} r="5" fill={chartColors[seriesIndex]} opacity="0.85"><title>{`${formatChartNumber(xValue)}, ${series.label} ${formatChartNumber(yValue)}`}</title></circle>
       }))}
     </svg>
@@ -111,9 +111,9 @@ function polarPoint(center: number, radius: number, angle: number): { x: number;
 
 function PieChart({ result }: { result: VisualizationResult }) {
   const series = result.spec.series[0]
-  if (!series) return <ChartEmpty message="The pie chart has no numeric series." />
-  const slices = result.rows.map((row) => ({ name: label(row[result.spec.categoryField]), value: Math.max(0, numberValue(row[series.field]) ?? 0) })).filter((slice) => slice.value > 0)
+  const slices = series ? result.rows.map((row) => ({ name: label(row[result.spec.categoryField]), value: Math.max(0, numberValue(row[series.field]) ?? 0) })).filter((slice) => slice.value > 0) : []
   const keyedSlices = withStableKeys(slices, (slice) => `${slice.name}:${slice.value}`)
+  if (!series) return <ChartEmpty message="The pie chart has no numeric series." />
   const total = slices.reduce((sum, slice) => sum + slice.value, 0)
   if (!total) return <ChartEmpty message="The generated query returned no positive values for this pie chart." />
   let angle = 0
@@ -152,6 +152,16 @@ function Legend({ series }: { series: VisualizationSeries[] }) {
   return <div className="flex flex-wrap items-center gap-4">{series.map((item, index) => <span key={item.field} className="flex items-center gap-1.5 text-[11px] text-muted"><span className="size-2 rounded-sm" style={{ backgroundColor: chartColors[index] }} />{item.label}</span>)}</div>
 }
 
+const VisualizationOutput = memo(function VisualizationOutput({ result }: { result: VisualizationResult }) {
+  return (
+    <section className="rounded-lg border border-line bg-panel">
+      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-line px-4 py-3"><div><div className="flex items-center gap-2"><ChartBar size={17} className="text-accent" aria-hidden="true" /><h2 className="text-sm font-semibold">{result.spec.title}</h2><span className="rounded bg-accent-soft px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-accent-strong">{result.spec.chartType}</span></div>{result.spec.description && <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">{result.spec.description}</p>}</div><div className="text-right font-mono text-[9px] uppercase tracking-wider text-faint"><p>{result.rows.length} rows · {result.durationMs} ms</p><p className="mt-1">Updated {new Date(result.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</p></div></header>
+      <div className="p-4">{result.spec.chartType !== "table" && <div className="mb-3"><Legend series={result.spec.series} /></div>}{result.spec.chartType === "pie" ? <PieChart result={result} /> : result.spec.chartType === "table" ? <DataTable result={result} /> : <CartesianChart result={result} />}</div>
+      <details className="border-t border-line px-4 py-3"><summary className="cursor-pointer select-none font-mono text-[10px] uppercase tracking-wider text-faint focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">Generated pipeline</summary><pre className="scrollbar-thin mt-3 overflow-auto rounded-md bg-canvas p-3 font-mono text-[11px] leading-5 text-muted">{JSON.stringify(result.spec.pipeline, null, 2)}</pre></details>
+    </section>
+  )
+})
+
 export function VisualizationPanel({ prompt, result, loading, error, canRefresh, onPromptChange, onGenerate, onRefresh }: { prompt: string; result: VisualizationResult | null; loading: boolean; error: string; canRefresh: boolean; onPromptChange: (prompt: string) => void; onGenerate: () => void; onRefresh: () => void }) {
   function submit(event: FormEvent): void {
     event.preventDefault()
@@ -163,7 +173,7 @@ export function VisualizationPanel({ prompt, result, loading, error, canRefresh,
       <form onSubmit={submit} className="border-b border-line bg-shell p-3">
         <label htmlFor="visualization-prompt" className="mb-2 flex items-center gap-2 text-xs font-medium"><Sparkle size={15} className="text-accent" weight="fill" aria-hidden="true" />Describe a visualization</label>
         <div className="flex items-end gap-2">
-          <textarea id="visualization-prompt" value={prompt} onChange={(event) => onPromptChange(event.target.value)} rows={2} maxLength={4_000} placeholder="Show monthly revenue as a line chart, grouped by paidAt" className="min-h-20 min-w-0 flex-1 resize-y rounded-md border border-line-strong bg-canvas px-3 py-2 text-xs leading-5 text-ink placeholder:text-faint focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 focus-visible:outline-none" />
+          <textarea id="visualization-prompt" value={prompt} onChange={(event) => onPromptChange(event.target.value)} disabled={loading} rows={2} maxLength={4_000} placeholder="Show monthly revenue as a line chart, grouped by paidAt" className="min-h-20 min-w-0 flex-1 resize-y rounded-md border border-line-strong bg-canvas px-3 py-2 text-xs leading-5 text-ink placeholder:text-faint focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60" />
           <button type="submit" disabled={loading || !prompt.trim()} aria-busy={loading} className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md bg-accent px-4 text-xs font-semibold text-canvas transition-[background-color,transform] duration-150 ease-product hover:bg-accent-strong active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-shell focus-visible:outline-none disabled:cursor-not-allowed disabled:bg-line-strong disabled:text-muted"><Lightning size={14} weight="fill" aria-hidden="true" />{loading && !result ? "Creating" : "Generate"}</button>
           <button type="button" onClick={onRefresh} disabled={loading || !canRefresh} aria-busy={loading && canRefresh} className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md border border-line-strong bg-panel px-3 text-xs font-medium text-muted hover:border-accent hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"><ArrowClockwise size={14} aria-hidden="true" />Refresh data</button>
         </div>
@@ -171,13 +181,7 @@ export function VisualizationPanel({ prompt, result, loading, error, canRefresh,
         {error && <div role="alert" className="mt-3 flex items-center justify-between gap-3 rounded border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"><span>{error}</span><button type="button" onClick={canRefresh ? onRefresh : onGenerate} className="shrink-0 rounded px-2 py-1 font-medium hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none">Try again</button></div>}
       </form>
       <div className="flex-1 p-4">
-        {loading && !result ? <div role="status" aria-label="Creating visualization" className="space-y-3"><div className="h-16 animate-pulse rounded-md bg-panel" /><div className="h-80 animate-pulse rounded-md border border-line bg-panel" /></div> : result ? (
-          <section className="rounded-lg border border-line bg-panel">
-            <header className="flex flex-wrap items-start justify-between gap-4 border-b border-line px-4 py-3"><div><div className="flex items-center gap-2"><ChartBar size={17} className="text-accent" aria-hidden="true" /><h2 className="text-sm font-semibold">{result.spec.title}</h2><span className="rounded bg-accent-soft px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-accent-strong">{result.spec.chartType}</span></div>{result.spec.description && <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">{result.spec.description}</p>}</div><div className="text-right font-mono text-[9px] uppercase tracking-wider text-faint"><p>{result.rows.length} rows · {result.durationMs} ms</p><p className="mt-1">Updated {new Date(result.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</p></div></header>
-            <div className="p-4">{result.spec.chartType !== "table" && <div className="mb-3"><Legend series={result.spec.series} /></div>}{result.spec.chartType === "pie" ? <PieChart result={result} /> : result.spec.chartType === "table" ? <DataTable result={result} /> : <CartesianChart result={result} />}</div>
-            <details className="border-t border-line px-4 py-3"><summary className="cursor-pointer select-none font-mono text-[10px] uppercase tracking-wider text-faint focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none">Generated pipeline</summary><pre className="scrollbar-thin mt-3 overflow-auto rounded-md bg-canvas p-3 font-mono text-[11px] leading-5 text-muted">{JSON.stringify(result.spec.pipeline, null, 2)}</pre></details>
-          </section>
-        ) : <div className="grid min-h-80 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-md text-center"><Sparkle size={30} weight="duotone" className="mx-auto mb-3 text-accent" aria-hidden="true" /><h2 className="text-sm font-semibold">Ask Pilot to visualize this collection</h2><p className="mt-1 text-xs leading-5 text-muted">Describe the question, grouping, and chart you want. Pilot will inspect the collection, build a safe aggregation, and plot the result.</p></div></div>}
+        {loading && !result ? <div role="status" aria-label="Creating visualization" className="space-y-3"><div className="h-16 animate-pulse rounded-md bg-panel" /><div className="h-80 animate-pulse rounded-md border border-line bg-panel" /></div> : result ? <VisualizationOutput result={result} /> : <div className="grid min-h-80 place-items-center rounded-lg border border-dashed border-line"><div className="max-w-md text-center"><Sparkle size={30} weight="duotone" className="mx-auto mb-3 text-accent" aria-hidden="true" /><h2 className="text-sm font-semibold">Ask Pilot to visualize this collection</h2><p className="mt-1 text-xs leading-5 text-muted">Describe the question, grouping, and chart you want. Pilot will inspect the collection, build a safe aggregation, and plot the result.</p></div></div>}
       </div>
     </div>
   )

@@ -37,11 +37,7 @@ export function serializeMongoDocument(document: Document): unknown {
 
 export function stringifyMongoDocument(document: Document): string {
   const objectId = objectIdHex(document._id)
-  const source = objectId ? { ...document, _id: { $oid: objectId } } : document
-  const serialized = stringifyCanonicalExtendedJson(source)
-  const parsed = JSON.parse(serialized) as unknown
-  if (!isRecord(parsed) || !objectId) return serialized
-  return JSON.stringify({ ...parsed, _id: { $oid: objectId } })
+  return stringifyCanonicalExtendedJson(objectId ? { ...document, _id: { $oid: objectId } } : document)
 }
 
 export function parseSerializedDocument(document: string): unknown {

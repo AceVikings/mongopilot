@@ -27,14 +27,21 @@ function isConnectionAccessMode(value: unknown): value is ConnectionAccessMode {
 export class ConnectionStore {
   private readonly uriCache = new Map<string, string>()
   private readonly uriVersions = new Map<string, number>()
+  private recordsCache?: StoredConnection[]
+  private mutationQueue: Promise<void> = Promise.resolve()
 
   constructor(private readonly filePath: string) {}
 
   async list(): Promise<SavedConnection[]> {
+    await this.mutationQueue
     return (await this.read()).map(({ encryptedUri: _encryptedUri, ...connection }) => connection)
   }
 
-  async save(input: SaveConnectionInput): Promise<SavedConnection> {
+  save(input: SaveConnectionInput): Promise<SavedConnection> {
+    return this.enqueueMutation(() => this.saveNow(input))
+  }
+
+  private async saveNow(input: SaveConnectionInput): Promise<SavedConnection> {
     if (!safeStorage.isEncryptionAvailable()) {
       throw new Error("Secure credential storage is unavailable on this system.")
     }
@@ -66,27 +73,37 @@ export class ConnectionStore {
     return saved
   }
 
-  async updateSettings(input: UpdateConnectionSettingsInput): Promise<SavedConnection> {
-    if (!isEnvironment(input.environment) || !isConnectionAccessMode(input.connectionAccessMode)) {
+  updateSettings(input: UpdateConnectionSettingsInput): Promise<SavedConnection> {
+    return this.enqueueMutation(() => this.updateSettingsNow(input))
+  }
+
+  private async updateSettingsNow(input: UpdateConnectionSettingsInput): Promise<SavedConnection> {
+    if ((input.environment !== undefined && !isEnvironment(input.environment)) || (input.connectionAccessMode !== undefined && !isConnectionAccessMode(input.connectionAccessMode))) {
       throw new Error("Invalid connection environment or safety mode.")
     }
+    if (input.environment === undefined && input.connectionAccessMode === undefined) throw new Error("No connection settings were provided.")
     const records = await this.read()
     const target = records.find((item) => item.id === input.id)
     if (!target) throw new Error("Saved connection not found.")
-    target.environment = input.environment
-    target.connectionAccessMode = input.connectionAccessMode
+    if (input.environment !== undefined) target.environment = input.environment
+    if (input.connectionAccessMode !== undefined) target.connectionAccessMode = input.connectionAccessMode
     await this.write(records)
     const { encryptedUri: _encryptedUri, ...connection } = target
     return connection
   }
 
-  async remove(id: string): Promise<void> {
+  remove(id: string): Promise<void> {
+    return this.enqueueMutation(() => this.removeNow(id))
+  }
+
+  private async removeNow(id: string): Promise<void> {
     await this.write((await this.read()).filter((item) => item.id !== id))
     this.uriVersions.set(id, (this.uriVersions.get(id) ?? 0) + 1)
     this.uriCache.delete(id)
   }
 
   async getUri(id: string): Promise<string> {
+    await this.mutationQueue
     const cached = this.uriCache.get(id)
     if (cached !== undefined) return cached
     const uriVersion = this.uriVersions.get(id) ?? 0
@@ -106,7 +123,11 @@ export class ConnectionStore {
     }
   }
 
-  async markConnected(id: string): Promise<SavedConnection> {
+  markConnected(id: string): Promise<SavedConnection> {
+    return this.enqueueMutation(() => this.markConnectedNow(id))
+  }
+
+  private async markConnectedNow(id: string): Promise<SavedConnection> {
     const records = await this.read()
     const target = records.find((item) => item.id === id)
     if (!target) throw new Error("Saved connection not found.")
@@ -122,10 +143,17 @@ export class ConnectionStore {
     return authority.includes("@") ? (authority.split("@").at(-1) ?? authority) : authority
   }
 
+  private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(operation)
+    this.mutationQueue = result.then(() => undefined, () => undefined)
+    return result
+  }
+
   private async read(): Promise<StoredConnection[]> {
+    if (this.recordsCache) return this.recordsCache.map((record) => ({ ...record }))
     try {
       const records = JSON.parse(await readFile(this.filePath, "utf8")) as PersistedConnection[]
-      return records.map((record) => {
+      this.recordsCache = records.map((record) => {
         const legacyMode = record.accessMode === "write-only" ? "read-write" : record.accessMode
         const agentAccessMode = record.agentAccessMode ?? legacyMode ?? "read-only"
         const { accessMode: _legacyAccessMode, ...current } = record
@@ -138,8 +166,12 @@ export class ConnectionStore {
           environment: isEnvironment(record.environment) ? record.environment : "unlabeled",
         }
       })
+      return this.recordsCache.map((record) => ({ ...record }))
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.recordsCache = []
+        return []
+      }
       throw error
     }
   }
@@ -147,5 +179,6 @@ export class ConnectionStore {
   private async write(records: StoredConnection[]): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true })
     await writeFile(this.filePath, JSON.stringify(records, null, 2), { mode: 0o600 })
+    this.recordsCache = records.map((record) => ({ ...record }))
   }
 }

@@ -38,6 +38,8 @@ export function isWebUrl(value: string): boolean {
 
 export function getBsonDisplay(value: unknown, dateMode: DateDisplayMode = "database"): BsonDisplay | null {
   if (!isRecord(value)) return null
+  const firstKey = Object.keys(value)[0]
+  if (!firstKey?.startsWith("$")) return null
 
   if (hasOnlyKeys(value, ["$oid"]) && typeof value.$oid === "string") {
     return { kind: "id", text: `ObjectId(${quote(value.$oid)})` }

@@ -10,24 +10,22 @@ export class WriteApprovalService {
   request(input: WriteApprovalInput): Promise<void> {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
     if (!window || window.isDestroyed()) throw new Error("Database writes require an open Mongo Pilot window for approval.")
-    const close = () => this.broker.cancel()
-    const rendererGone = () => this.broker.cancel()
-    const navigation = () => this.broker.cancel()
+    const cancel = () => this.broker.cancel()
     let requestId: string | undefined
     const approval = this.broker.request(input, (request) => {
       requestId = request.id
       this.activeRequest = { id: request.id, webContentsId: window.webContents.id }
       window.webContents.send("write-approval:requested", request)
     })
-    window.once("closed", close)
-    window.webContents.once("render-process-gone", rendererGone)
-    window.webContents.once("did-start-navigation", navigation)
+    window.once("closed", cancel)
+    window.webContents.once("render-process-gone", cancel)
+    window.webContents.once("did-start-navigation", cancel)
     return approval.finally(() => {
       if (this.activeRequest?.id === requestId) this.activeRequest = undefined
-      window.removeListener("closed", close)
+      window.removeListener("closed", cancel)
       if (!window.isDestroyed()) {
-        window.webContents.removeListener("render-process-gone", rendererGone)
-        window.webContents.removeListener("did-start-navigation", navigation)
+        window.webContents.removeListener("render-process-gone", cancel)
+        window.webContents.removeListener("did-start-navigation", cancel)
       }
     })
   }
