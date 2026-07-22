@@ -4,6 +4,19 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-07-22
+
+### Changed
+
+- Keep filtered document pagination responsive without waiting for exact collection scans.
+- Isolate document, Copilot, and visualization rendering from unrelated typing and panel resizing.
+- Render very large documents progressively and bound schema analysis work.
+
+### Fixed
+
+- Prevent stale database and query responses from replacing the active workspace.
+- Drain OpenCode process output after startup and serialize cached connection setting updates safely.
+
 ## [0.2.8] - 2026-07-22
 
 ### Added
