@@ -273,7 +273,7 @@ export type UpdateStatus =
 
 export interface MongoPilotApi {
   writeApprovals: {
-    resolve(response: WriteApprovalResponse): void
+    resolve(response: WriteApprovalResponse): Promise<boolean>
     onRequest(listener: (request: WriteApprovalRequest) => void): () => void
     onCancelled(listener: (id: string) => void): () => void
   }

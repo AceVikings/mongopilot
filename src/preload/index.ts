@@ -1,18 +1,38 @@
 import { contextBridge, ipcRenderer } from "electron"
 import type { AggregateInput, CollectionReportInput, CollectionTargetInput, CopilotPromptInput, DocumentTargetInput, FindInput, MongoPilotApi, ReplaceDocumentInput, SaveConnectionInput, SchemaAnalysisInput, ShellCompletionInput, ShellEvaluateInput, ShellStartInput, UpdateConnectionSettingsInput, UpdateStatus, VisualizationGenerateInput, VisualizationRefreshInput, WriteApprovalRequest, WriteApprovalResponse } from "../shared/types"
 
+let queuedWriteApproval: WriteApprovalRequest | undefined
+let writeApprovalListener: ((request: WriteApprovalRequest) => void) | undefined
+let writeApprovalCancelledListener: ((id: string) => void) | undefined
+
+ipcRenderer.on("write-approval:requested", (_event, request: WriteApprovalRequest) => {
+  if (writeApprovalListener) writeApprovalListener(request)
+  else queuedWriteApproval = request
+})
+ipcRenderer.on("write-approval:cancelled", (_event, id: string) => {
+  if (queuedWriteApproval?.id === id) queuedWriteApproval = undefined
+  writeApprovalCancelledListener?.(id)
+})
+
 const api: MongoPilotApi = {
   writeApprovals: {
-    resolve: (response: WriteApprovalResponse) => ipcRenderer.send("write-approval:resolve", response),
+    resolve: (response: WriteApprovalResponse) => ipcRenderer.invoke("write-approval:resolve", response),
     onRequest: (callback: (request: WriteApprovalRequest) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, request: WriteApprovalRequest) => callback(request)
-      ipcRenderer.on("write-approval:requested", listener)
-      return () => ipcRenderer.removeListener("write-approval:requested", listener)
+      writeApprovalListener = callback
+      if (queuedWriteApproval) {
+        const request = queuedWriteApproval
+        queuedWriteApproval = undefined
+        callback(request)
+      }
+      return () => {
+        if (writeApprovalListener === callback) writeApprovalListener = undefined
+      }
     },
     onCancelled: (callback: (id: string) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, id: string) => callback(id)
-      ipcRenderer.on("write-approval:cancelled", listener)
-      return () => ipcRenderer.removeListener("write-approval:cancelled", listener)
+      writeApprovalCancelledListener = callback
+      return () => {
+        if (writeApprovalCancelledListener === callback) writeApprovalCancelledListener = undefined
+      }
     },
   },
   connections: {

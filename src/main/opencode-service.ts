@@ -114,7 +114,7 @@ export class OpencodeService {
               headers: { Authorization: `Bearer ${mongoMcp.token}` },
               oauth: false,
               enabled: true,
-              timeout: 30_000,
+              timeout: 180_000,
             },
           },
       }, lifecycleVersion)

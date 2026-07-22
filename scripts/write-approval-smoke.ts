@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import type { WriteApprovalRequest } from "../src/shared/types"
 import { WriteApprovalBroker, type WriteApprovalInput, writeApprovalPreview } from "../src/main/write-approval-broker"
+import { MongoService } from "../src/main/mongo-service"
 
 const input: WriteApprovalInput = {
   connectionId: "connection-1",
@@ -14,8 +15,9 @@ const approvedBroker = new WriteApprovalBroker()
 let approvedRequest: WriteApprovalRequest | undefined
 const approved = approvedBroker.request(input, (request) => { approvedRequest = request })
 assert.ok(approvedRequest)
-approvedBroker.resolve({ id: approvedRequest.id, approved: true })
-await approved
+  assert.equal(approvedBroker.resolve({ id: approvedRequest.id, approved: true }), true)
+  await approved
+  assert.equal(approvedBroker.resolve({ id: approvedRequest.id, approved: true }), false)
 
 const deniedBroker = new WriteApprovalBroker()
 let deniedRequest: WriteApprovalRequest | undefined
@@ -50,5 +52,31 @@ const expiringBroker = new WriteApprovalBroker(5, (id) => { expiredId = id })
 await assert.rejects(expiringBroker.request(input, (request) => { expiringRequest = request }), /approval expired/)
 assert.ok(expiringRequest)
 assert.equal(expiredId, expiringRequest.id)
+
+const throwingExpiryBroker = new WriteApprovalBroker(5, () => { throw new Error("renderer unavailable") })
+await assert.rejects(throwingExpiryBroker.request(input, () => undefined), /approval expired/)
+
+let receivedWriteOptions: unknown
+const mongoService = new MongoService({} as never, { request: async () => undefined } as never)
+const fakeClient = {
+  db: () => ({
+    collection: () => ({
+      insertOne: async (_document: unknown, options: unknown) => {
+        receivedWriteOptions = options
+        throw new Error("operation timed out")
+      },
+    }),
+  }),
+}
+const active = Reflect.get(mongoService, "active") as Map<string, unknown>
+active.set("connection-1", {
+  client: fakeClient,
+  connection: { id: "connection-1", connectionAccessMode: "read-write", agentAccessMode: "read-write" },
+})
+await assert.rejects(
+  mongoService.agentInsertOne("connection-1", "db", "items", { value: 1 }, "scope"),
+  /outcome may be unknown; verify the target data before retrying.*operation timed out/,
+)
+assert.deepEqual(receivedWriteOptions, { timeoutMS: 30_000 })
 
 console.log("Write approval resume, denial, expiry, preview, cancellation, and concurrency behavior verified.")

@@ -4,6 +4,14 @@ All notable changes to Mongo Pilot are documented here.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-22
+
+### Fixed
+
+- Keep agent write approvals alive long enough to complete and acknowledge approval clicks before dismissing the dialog.
+- Buffer approval requests until the renderer is ready and prevent duplicate or stale approval responses from suggesting unsafe retries.
+- Bound approved MongoDB writes and align approval, operation, and MCP timeout budgets so stalled writes fail clearly instead of hanging.
+
 ## [0.2.4] - 2026-07-21
 
 ### Fixed

@@ -337,7 +337,7 @@ export class MongoService {
       destructive: false,
     })
     const approvedActive = this.requireWrite(input.connectionId)
-    const result = await approvedActive.client.db(input.database).collection(input.collection).replaceOne({ _id: id } as Filter<Document>, replacement)
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(input.database).collection(input.collection).replaceOne({ _id: id } as Filter<Document>, replacement, { timeoutMS: 30_000 }))
     if (result.matchedCount === 0) throw new Error("Document no longer exists.")
   }
 
@@ -352,7 +352,7 @@ export class MongoService {
       destructive: true,
     })
     const approvedActive = this.requireWrite(input.connectionId)
-    const result = await approvedActive.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>)
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(input.database).collection(input.collection).deleteOne({ _id: id } as Filter<Document>, { timeoutMS: 30_000 }))
     if (result.deletedCount === 0) throw new Error("Document no longer exists.")
   }
 
@@ -402,7 +402,7 @@ export class MongoService {
       destructive: false,
     })
     const approvedActive = this.requireAgentWrite(connectionId)
-    const result = await approvedActive.client.db(database).collection(collection).insertOne(document)
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).insertOne(document, { timeoutMS: 30_000 }))
     return serializeBson({ acknowledged: result.acknowledged, insertedId: result.insertedId })
   }
 
@@ -419,7 +419,7 @@ export class MongoService {
       destructive: false,
     })
     const approvedActive = this.requireAgentWrite(connectionId)
-    const result = await approvedActive.client.db(database).collection(collection).updateOne(filter, update)
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).updateOne(filter, update, { timeoutMS: 30_000 }))
     return { acknowledged: result.acknowledged, matchedCount: result.matchedCount, modifiedCount: result.modifiedCount }
   }
 
@@ -436,7 +436,7 @@ export class MongoService {
       destructive: true,
     })
     const approvedActive = this.requireAgentWrite(connectionId)
-    const result = await approvedActive.client.db(database).collection(collection).deleteOne(filter)
+    const result = await this.runApprovedWrite(() => approvedActive.client.db(database).collection(collection).deleteOne(filter, { timeoutMS: 30_000 }))
     return { acknowledged: result.acknowledged, deletedCount: result.deletedCount }
   }
 
@@ -448,6 +448,15 @@ export class MongoService {
 
   cancelAgentWriteApproval(scope?: string): void {
     this.writeApprovals.cancelAgentRequest(scope)
+  }
+
+  private async runApprovedWrite<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`MongoDB did not confirm the approved write. Its outcome may be unknown; verify the target data before retrying. ${detail}`, { cause: error })
+    }
   }
 
   private requireRead(id: string): ActiveConnection {

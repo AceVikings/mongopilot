@@ -56,7 +56,10 @@ function createWindow(): BrowserWindow {
 }
 
 function registerIpc(store: ConnectionStore): void {
-  ipcMain.on("write-approval:resolve", (_event, response: WriteApprovalResponse) => writeApprovals.resolve(response))
+  ipcMain.handle("write-approval:resolve", (event, response: WriteApprovalResponse) => {
+    if (!response || typeof response.id !== "string" || typeof response.approved !== "boolean") return false
+    return writeApprovals.resolve(response, event.sender.id)
+  })
   ipcMain.handle("connections:list", () => store.list())
   ipcMain.handle("connections:save", (_event, input: SaveConnectionInput) => store.save(input))
   ipcMain.handle("connections:updateSettings", (_event, input: UpdateConnectionSettingsInput) => mongo.updateConnectionSettings(input))

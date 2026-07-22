@@ -35,7 +35,11 @@ export class WriteApprovalBroker {
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending = undefined
-        this.onExpired(request.id)
+        try {
+          this.onExpired(request.id)
+        } catch {
+          // Expiry notification failures must not orphan the approval promise.
+        }
         reject(new Error("Database write approval expired."))
       }, this.timeoutMs)
       this.pending = { id: request.id, source: request.source, scope, resolve, reject, timeout }
@@ -49,13 +53,14 @@ export class WriteApprovalBroker {
     })
   }
 
-  resolve(response: WriteApprovalResponse): void {
+  resolve(response: WriteApprovalResponse): boolean {
     const pending = this.pending
-    if (!pending || pending.id !== response.id) return
+    if (!pending || pending.id !== response.id) return false
     clearTimeout(pending.timeout)
     this.pending = undefined
     if (response.approved) pending.resolve()
     else pending.reject(new Error("Database write was cancelled by the user."))
+    return true
   }
 
   cancel(source?: WriteApprovalSource, scope?: string): string | undefined {

@@ -4,6 +4,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { MongoMcpServer, type MongoAgentService } from "../src/main/mongo-mcp-server"
 
 let activeMode: "read-only" | "read-write" = "read-only"
+let resolveApprovedWrite: (() => void) | undefined
+let writeStarted: (() => void) | undefined
+let writePending = false
+let rejectApprovedWrite: ((error: Error) => void) | undefined
+let cancelledPendingWrite = false
 const fakeMongo = {
   getAgentAccessMode: () => activeMode,
   agentListDatabases: async () => [{ name: "verified_database" }],
@@ -11,10 +16,26 @@ const fakeMongo = {
   agentFind: async () => [],
   agentAggregate: async () => [],
   agentCount: async () => 0,
-  agentInsertOne: async () => ({ acknowledged: true }),
+  agentInsertOne: async () => {
+    writeStarted?.()
+    writePending = true
+    await new Promise<void>((resolve, reject) => {
+      resolveApprovedWrite = () => {
+        writePending = false
+        resolve()
+      }
+      rejectApprovedWrite = reject
+    })
+    return { acknowledged: true }
+  },
   agentUpdateOne: async () => ({ acknowledged: true }),
   agentDeleteOne: async () => ({ acknowledged: true }),
-  cancelAgentWriteApproval: () => undefined,
+  cancelAgentWriteApproval: () => {
+    if (!writePending) return
+    writePending = false
+    cancelledPendingWrite = true
+    rejectApprovedWrite?.(new Error("MCP request closed before approval resumed."))
+  },
 } satisfies MongoAgentService
 
 const server = new MongoMcpServer(fakeMongo)
@@ -56,10 +77,15 @@ try {
 
   server.setGrant({ connectionId: "connection-1", accessMode: "read-write" })
   assert.equal((await client.callTool({ name: "list_databases", arguments: {} })).isError, undefined)
-  assert.equal((await client.callTool({
+  const approvalReached = new Promise<void>((resolve) => { writeStarted = resolve })
+  const approvedWrite = client.callTool({
     name: "insert_one",
     arguments: { database: "db", collection: "items", document: { status: "new" } },
-  })).isError, undefined)
+  })
+  await approvalReached
+  assert.ok(resolveApprovedWrite)
+  resolveApprovedWrite()
+  assert.equal((await approvedWrite).isError, undefined)
 
   server.clearGrant()
   const ungranted = await client.callTool({ name: "list_databases", arguments: {} })
@@ -67,8 +93,23 @@ try {
 
   const unauthorized = await fetch(endpoint.url, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
   assert.equal(unauthorized.status, 401)
+
+  server.setGrant({ connectionId: "connection-1", accessMode: "read-write" })
+  const cancellationReached = new Promise<void>((resolve) => { writeStarted = resolve })
+  const cancelledWrite = client.callTool({
+    name: "insert_one",
+    arguments: { database: "db", collection: "items", document: { status: "cancelled" } },
+  })
+  await cancellationReached
+  await transport.close()
+  await cancelledWrite.catch(() => undefined)
+  for (let attempt = 0; attempt < 20 && writePending; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  assert.equal(cancelledPendingWrite, true)
+  assert.equal(writePending, false)
   console.log("MongoDB MCP bearer auth and read/read-write enforcement verified.")
 } finally {
-  await client.close()
+  await client.close().catch(() => undefined)
   await server.stop()
 }

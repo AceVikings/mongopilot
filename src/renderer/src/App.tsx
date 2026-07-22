@@ -1014,6 +1014,7 @@ export default function App() {
   const [copiedDocumentId, setCopiedDocumentId] = useState<string | null>(null)
   const [mutatingDocumentId, setMutatingDocumentId] = useState<string | null>(null)
   const [writeApproval, setWriteApproval] = useState<WriteApprovalRequest | null>(null)
+  const [resolvingWriteApprovalId, setResolvingWriteApprovalId] = useState<string | null>(null)
   const [dateDisplayMode, setDateDisplayMode] = useState<DateDisplayMode>(() => localStorage.getItem("mongo-pilot:date-display") === "local" ? "local" : "database")
   const [connectionMenuId, setConnectionMenuId] = useState<string | null>(null)
   const [connectingConnectionId, setConnectingConnectionId] = useState<string | null>(null)
@@ -1027,6 +1028,7 @@ export default function App() {
   const [panelWidths, setPanelWidths] = useState(() => ({ left: readPanelWidth("left"), right: readPanelWidth("right") }))
   const removeCancelRef = useRef<HTMLButtonElement>(null)
   const collectionTargetRef = useRef("")
+  const resolvingWriteApprovalRef = useRef<string | null>(null)
 
   const leftPanelMax = Math.max(
     panelLimits.left.min,
@@ -1057,9 +1059,15 @@ export default function App() {
 
   useEffect(() => {
     if (!window.mongoPilot) return
-    const unsubscribeRequest = window.mongoPilot.writeApprovals.onRequest(setWriteApproval)
+    const unsubscribeRequest = window.mongoPilot.writeApprovals.onRequest((request) => {
+      resolvingWriteApprovalRef.current = null
+      setResolvingWriteApprovalId(null)
+      setWriteApproval(request)
+    })
     const unsubscribeCancelled = window.mongoPilot.writeApprovals.onCancelled((id) => {
       setWriteApproval((current) => current?.id === id ? null : current)
+      if (resolvingWriteApprovalRef.current === id) resolvingWriteApprovalRef.current = null
+      setResolvingWriteApprovalId((current) => current === id ? null : current)
     })
     return () => {
       unsubscribeRequest()
@@ -1592,10 +1600,21 @@ export default function App() {
     }
   }
 
-  function resolveWriteApproval(approved: boolean): void {
-    if (!writeApproval || !window.mongoPilot) return
-    window.mongoPilot.writeApprovals.resolve({ id: writeApproval.id, approved })
-    setWriteApproval(null)
+  async function resolveWriteApproval(approved: boolean): Promise<void> {
+    if (!writeApproval || !window.mongoPilot || resolvingWriteApprovalRef.current !== null) return
+    const requestId = writeApproval.id
+    resolvingWriteApprovalRef.current = requestId
+    setResolvingWriteApprovalId(requestId)
+    try {
+      const accepted = await window.mongoPilot.writeApprovals.resolve({ id: requestId, approved })
+      if (!accepted) setError("This write approval expired or was cancelled before Mongo Pilot received it. Retry the request.")
+      setWriteApproval((current) => current?.id === requestId ? null : current)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Mongo Pilot could not confirm this write approval.")
+    } finally {
+      if (resolvingWriteApprovalRef.current === requestId) resolvingWriteApprovalRef.current = null
+      setResolvingWriteApprovalId((current) => current === requestId ? null : current)
+    }
   }
 
   function changeDateDisplayMode(mode: DateDisplayMode): void {
@@ -1945,7 +1964,7 @@ export default function App() {
           await connect(connection)
         }}
       />}
-      {writeApproval && <WriteApprovalDialog request={writeApproval} onResolve={resolveWriteApproval} />}
+      {writeApproval && <WriteApprovalDialog request={writeApproval} resolving={resolvingWriteApprovalId === writeApproval.id} onResolve={(approved) => void resolveWriteApproval(approved)} />}
       {pendingRemoveConnection && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-6 backdrop-blur-sm">
           <button type="button" aria-label="Cancel connection removal" disabled={removingConnectionId !== null} onClick={() => setPendingRemoveConnection(null)} className="absolute inset-0 cursor-default focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-danger focus-visible:outline-none disabled:cursor-wait" />
